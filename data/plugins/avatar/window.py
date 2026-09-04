@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt5 import QtWidgets, QtCore, QtGui
+import config
+try:
+    from settings_manager import load_settings, save_settings
+except Exception:
+    load_settings = None
+    save_settings = None
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
@@ -219,3 +225,25 @@ class AvatarWindow(QtWidgets.QWidget):
 
     def mouseReleaseEvent(self, event):
         self._drag = None
+        # Сохранить текущую позицию окна в настройках плагина, чтобы при следующем запуске
+        # окно можно было восстановить туда же (немедленное применение — записываем в config).
+        try:
+            pos = self.pos()
+            store = getattr(config, "PLUGIN_SETTINGS", None) or {}
+            block = dict(store.get("avatar") or {})
+            block["position"] = [int(pos.x()), int(pos.y())]
+            store["avatar"] = block
+            try:
+                config.PLUGIN_SETTINGS = store
+            except Exception:
+                pass
+            # Попытаться сохранить на диск
+            if load_settings is not None and save_settings is not None:
+                try:
+                    data = load_settings() or {}
+                    data["PLUGIN_SETTINGS"] = store
+                    save_settings(data)
+                except Exception:
+                    pass
+        except Exception:
+            pass
