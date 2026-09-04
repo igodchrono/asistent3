@@ -2,10 +2,17 @@
 """Долговременная память персонажа (SQLite, без авто-очистки)."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_STOP = {
+    "это", "как", "что", "кто", "где", "когда", "меня", "тебя", "тебе",
+    "меня", "привет", "пока", "ну", "да", "нет", "ок", "окей", "просто",
+    "the", "and", "you", "what", "how", "hey", "hi",
+}
 
 
 class CharacterMemoryStore:
@@ -34,7 +41,6 @@ class CharacterMemoryStore:
             )
             """
         )
-        # migrate pinned if old db
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(memories)").fetchall()]
         if "pinned" not in cols:
             self._conn.execute("ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0")
@@ -165,31 +171,93 @@ class CharacterMemoryStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def search(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
-        q = (query or "").strip()
-        if not q:
-            return self.list_recent(limit=limit)
-        like = f"%{q}%"
+    def list_sticky(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Закреплённые / долгосрочные / профиль — всегда в промпт после рестарта."""
         rows = self._conn.execute(
             """
             SELECT id, category, key, content, importance, pinned, created_at, updated_at
             FROM memories
-            WHERE content LIKE ? OR IFNULL(key,'') LIKE ? OR category LIKE ?
+            WHERE IFNULL(pinned,0)=1
+               OR category IN ('longterm','fact','user','preference','profile','blocked_url')
+               OR IFNULL(importance,0) >= 0.75
             ORDER BY pinned DESC, importance DESC, updated_at DESC
             LIMIT ?
             """,
-            (like, like, like, int(limit)),
+            (int(limit),),
         ).fetchall()
-        now = time.time()
-        for r in rows:
-            self._conn.execute("UPDATE memories SET last_used=? WHERE id=?", (now, int(r["id"])))
-        self._conn.commit()
         return [dict(r) for r in rows]
+
+    def search(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
+        q = (query or "").strip()
+        if not q:
+            return self.list_recent(limit=limit)
+
+        tokens = [
+            t for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9_\-]{3,}", q.lower())
+            if t not in _STOP
+        ]
+        # полное предложение почти никогда не лежит в content целиком
+        clauses = ["IFNULL(pinned,0)=1"]
+        params: List[Any] = []
+        if tokens:
+            for tok in tokens[:8]:
+                clauses.append("(LOWER(content) LIKE ? OR LOWER(IFNULL(key,'')) LIKE ? OR LOWER(category) LIKE ?)")
+                like = f"%{tok}%"
+                params.extend([like, like, like])
+        else:
+            clauses.append("(LOWER(content) LIKE ? OR LOWER(IFNULL(key,'')) LIKE ?)")
+            like = f"%{q.lower()}%"
+            params.extend([like, like])
+
+        sql = f"""
+            SELECT id, category, key, content, importance, pinned, created_at, updated_at
+            FROM memories
+            WHERE {" OR ".join(clauses)}
+            ORDER BY pinned DESC, importance DESC, updated_at DESC
+            LIMIT ?
+        """
+        params.append(max(int(limit) * 3, 16))
+        rows = self._conn.execute(sql, params).fetchall()
+        now = time.time()
+        out = []
+        seen = set()
+        for r in rows:
+            rid = int(r["id"])
+            if rid in seen:
+                continue
+            seen.add(rid)
+            self._conn.execute("UPDATE memories SET last_used=? WHERE id=?", (now, rid))
+            out.append(dict(r))
+            if len(out) >= int(limit):
+                break
+        self._conn.commit()
+        return out
+
+    def recall_for_prompt(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
+        """Липкие факты + релевантный поиск. Пустой «привет» тоже поднимает память."""
+        sticky = self.list_sticky(limit=max(int(limit), 8))
+        found = self.search(query, limit=limit) if (query or "").strip() else []
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for it in sticky + found:
+            rid = it.get("id")
+            if rid in seen:
+                continue
+            seen.add(rid)
+            merged.append(it)
+            if len(merged) >= int(limit):
+                break
+        if not merged:
+            merged = self.list_recent(limit=limit)
+        return merged
 
     def format_for_prompt(self, items: List[Dict[str, Any]], max_chars: int = 2000) -> str:
         if not items:
             return ""
-        lines = ["[долговременная память персонажа]"]
+        lines = [
+            "[долговременная память персонажа — действует после перезапуска, это факты о хозяине и мире]",
+            "Используй эти факты, даже если в текущей реплике их нет.",
+        ]
         used = 0
         for it in items:
             cat = it.get("category") or "fact"
@@ -201,7 +269,7 @@ class CharacterMemoryStore:
                 break
             lines.append(line)
             used += len(line)
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return "\n".join(lines) if len(lines) > 2 else ""
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()
