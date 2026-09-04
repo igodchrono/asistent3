@@ -15,11 +15,15 @@
   "PLUGIN_SETTINGS": {
     "avatar": {
       "show": true,
-      "size": 250,
+      "size": 270,
       "always_on_top": true,
-      "corner": "bottom_right",
+      "corner": "bottom_left",
       "anim_ms": 80,
-      "react_to_reply": true
+      "react_to_reply": true,
+      "position": [
+        1706,
+        785
+      ]
     },
     "memory": {
       "enabled": true,

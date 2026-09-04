@@ -103,6 +103,11 @@ class PluginImpl(Plugin):
     def _ensure_window(self) -> None:
         if self.win is None:
             self.win = AvatarWindow()
+            # дать окну доступ к app для сохранения позиции при перемещении
+            try:
+                self.win.app = self.app
+            except Exception:
+                pass
         size = int(self.app.get_plugin_setting(self.id, "size", 280) or 280)
         self.win.set_display_size(size)
         self.win.set_always_on_top(
@@ -123,7 +128,17 @@ class PluginImpl(Plugin):
         n = self.win.load_from_character_dir(cdir)
         print(f"🖼 avatar: {cdir.name} кадров/файлов≈{n} names={self.win.animation_names()[:12]}", flush=True)
         self.win.show_static("neutral")
-        corner = str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
-        self.win.move_to_corner(corner)
+        # Если задано явное положение (position) — использовать его, иначе переместить в угол
+        pos = self.app.get_plugin_setting(self.id, "position", None)
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            try:
+                x, y = int(pos[0]), int(pos[1])
+                self.win.move(x, y)
+            except Exception:
+                corner = str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
+                self.win.move_to_corner(corner)
+        else:
+            corner = str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
+            self.win.move_to_corner(corner)
         if self.app.get_plugin_setting(self.id, "show", True):
             self.win.show()

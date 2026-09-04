@@ -129,5 +129,19 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
                 setattr(config, "ACTIVE_CHARACTER", prev)
                 app_ctx.set_active_character(str(new_ch))
                 setattr(config, "ACTIVE_CHARACTER", str(new_ch))
+        # После применения настроек — уведомить плагины о смене конфигурации,
+        # чтобы они могли моментально применить новые параметры (без перезапуска).
+        try:
+            if app_ctx is not None:
+                cid = str(getattr(config, "ACTIVE_CHARACTER", "default"))
+                for pl in list(app_ctx.plugins.values()):
+                    try:
+                        # Вызов on_character_changed с одинаковыми prev/current заставит плагин
+                        # перечитать свои настройки и обновить UI.
+                        pl.on_character_changed(cid, cid, app_ctx)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         QtWidgets.QMessageBox.information(self, "OK", "Сохранено.")
         self.accept()
