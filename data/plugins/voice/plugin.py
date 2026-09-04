@@ -14,7 +14,7 @@ from core.plugin_api import AppContext, Plugin, SettingField
 class PluginImpl(Plugin):
 	id = "voice"
 	name = "Голос"
-	version = "1.0.0"
+	version = "1.1.0"
 	description = "Голосовое управление через Vosk и озвучивание ответов через pyttsx3."
 	settings_tab = "own"
 	settings_tab_title = "Голос"
@@ -37,14 +37,16 @@ class PluginImpl(Plugin):
 		self.app: Optional[AppContext] = None
 		self._thread: Optional[threading.Thread] = None
 		self._stop = threading.Event()
+		self._speak_stop = threading.Event()
+		self._speak_gen = 0
 		self._speech_queue: queue.Queue[str] = queue.Queue()
 		self._model = None
 		self._recognizer = None
 		self._speaker_lock = threading.Lock()
+		self._pyttsx_engine = None
 		self._settings_widgets = {}
 
 	def setup_settings_tab(self, tab: Any, app: AppContext) -> bool:
-		"""Показать реальные голоса и микрофоны, доступные в системе."""
 		from PyQt5 import QtWidgets
 
 		self.app = app
@@ -116,12 +118,17 @@ class PluginImpl(Plugin):
 		form.addRow("TTS API ключ", api_key)
 		form.addRow("TTS модель", api_model)
 		self._settings_widgets.update({"tts_api_url": api_url, "tts_api_key": api_key, "tts_model": api_model})
+		btns = QtWidgets.QHBoxLayout()
 		test_btn = QtWidgets.QPushButton("Проверить голос")
 		test_btn.clicked.connect(lambda: self.speak("Проверка голосовой озвучки успешно выполнена."))
+		stop_btn = QtWidgets.QPushButton("⏹ Стоп воспроизведение")
+		stop_btn.clicked.connect(self.stop_speaking)
 		refresh_btn = QtWidgets.QPushButton("Обновить устройства")
 		refresh_btn.clicked.connect(lambda: self.setup_settings_tab(tab, app))
-		layout.addWidget(test_btn)
-		layout.addWidget(refresh_btn)
+		btns.addWidget(test_btn)
+		btns.addWidget(stop_btn)
+		btns.addWidget(refresh_btn)
+		layout.addLayout(btns)
 		return True
 
 	def collect_settings_tab(self) -> dict:
@@ -148,6 +155,7 @@ class PluginImpl(Plugin):
 			self.start_listening()
 
 	def on_shutdown(self, app: AppContext) -> None:
+		self.stop_speaking()
 		self.stop_listening()
 
 	def on_character_changed(self, character_id: str, previous_id: str, app: AppContext) -> None:
@@ -178,7 +186,28 @@ class PluginImpl(Plugin):
 		text = (text or "").strip()
 		if not text:
 			return
-		threading.Thread(target=self._speak_worker, args=(text,), name="voice-speaker", daemon=True).start()
+		self.stop_speaking()
+		self._speak_stop.clear()
+		self._speak_gen += 1
+		gen = self._speak_gen
+		threading.Thread(target=self._speak_worker, args=(text, gen), name="voice-speaker", daemon=True).start()
+
+	def stop_speaking(self) -> None:
+		"""Остановить текущее озвучивание сразу."""
+		self._speak_stop.set()
+		self._speak_gen += 1
+		try:
+			import sounddevice as sd
+			sd.stop()
+		except Exception:
+			pass
+		eng = self._pyttsx_engine
+		if eng is not None:
+			try:
+				eng.stop()
+			except Exception:
+				pass
+		print("voice: воспроизведение остановлено", flush=True)
 
 	def _listen_loop(self) -> None:
 		try:
@@ -225,28 +254,39 @@ class PluginImpl(Plugin):
 		if window is not None and hasattr(window, "submit_text"):
 			window.submit_text(text)
 
-	def _speak_worker(self, text: str) -> None:
+	def _speak_worker(self, text: str, gen: int) -> None:
+		if self._speak_stop.is_set() or gen != self._speak_gen:
+			return
 		with self._speaker_lock:
+			if self._speak_stop.is_set() or gen != self._speak_gen:
+				return
 			try:
 				if str(self._setting("tts_engine", "silero") or "silero") == "silero":
-					self._speak_silero(text)
+					self._speak_silero(text, gen)
 					return
 				import pyttsx3
 				engine = pyttsx3.init()
+				self._pyttsx_engine = engine
 				engine.setProperty("rate", int(self._setting("voice_rate", 175) or 175))
 				voice_id = str(self._setting("voice_id", "") or "")
 				if voice_id:
 					engine.setProperty("voice", voice_id)
 				engine.setProperty("volume", float(self._setting("voice_volume", 1.0) or 1.0))
+				if self._speak_stop.is_set() or gen != self._speak_gen:
+					engine.stop()
+					return
 				engine.say(text)
 				engine.runAndWait()
 				engine.stop()
+				self._pyttsx_engine = None
 			except Exception as exc:
 				print(f"voice: ошибка озвучивания: {exc}", flush=True)
 
-	def _speak_silero(self, text: str) -> None:
+	def _speak_silero(self, text: str, gen: int) -> None:
 		import torch
 		import sounddevice as sd
+		if self._speak_stop.is_set() or gen != self._speak_gen:
+			return
 		if not hasattr(self, "_silero_model"):
 			model, _ = torch.hub.load(
 				"snakers4/silero-models", "silero_tts", language="ru", speaker="v4_ru",
@@ -256,12 +296,31 @@ class PluginImpl(Plugin):
 			speakers = getattr(self._silero_model, "speakers", [])
 			if speakers and "xenia" not in speakers:
 				print(f"voice: доступные голоса Silero: {speakers}", flush=True)
+		if self._speak_stop.is_set() or gen != self._speak_gen:
+			return
 		voice = str(self._setting("voice_id", "xenia") or "xenia")
 		audio = self._silero_model.apply_tts(
 			text=text, speaker=voice, sample_rate=48000, put_accent=True, put_yo=True,
 		)
+		if self._speak_stop.is_set() or gen != self._speak_gen:
+			return
 		samples = audio.detach().cpu().numpy()
-		sd.play(samples, 48000, blocking=True)
+		sd.stop()
+		sd.play(samples, 48000, blocking=False)
+		# ждать конец или стоп
+		try:
+			import numpy as np
+			dur = float(len(samples)) / 48000.0
+		except Exception:
+			dur = 30.0
+		step = 0.05
+		waited = 0.0
+		while waited < dur + 0.2:
+			if self._speak_stop.is_set() or gen != self._speak_gen:
+				sd.stop()
+				return
+			self._speak_stop.wait(step)
+			waited += step
 		sd.stop()
 
 	def _setting(self, key: str, default: Any = None) -> Any:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Долговременная память персонажа (SQLite, без авто-очистки)."""
+"""Долговременная память одного персонажа (SQLite, без авто-очистки)."""
 from __future__ import annotations
 
 import re
@@ -10,19 +10,26 @@ from typing import Any, Dict, List, Optional
 
 _STOP = {
     "это", "как", "что", "кто", "где", "когда", "меня", "тебя", "тебе",
-    "меня", "привет", "пока", "ну", "да", "нет", "ок", "окей", "просто",
-    "the", "and", "you", "what", "how", "hey", "hi",
+    "привет", "пока", "ну", "да", "нет", "ок", "окей", "просто", "очень",
+    "the", "and", "you", "what", "how", "hey", "hi", "please",
 }
 
 
 class CharacterMemoryStore:
-    def __init__(self, character_dir: Path):
+    def __init__(self, character_dir: Path, character_id: str = ""):
+        self.character_id = (character_id or Path(character_dir).name).strip() or "default"
         self.character_dir = Path(character_dir)
+        self.character_dir.mkdir(parents=True, exist_ok=True)
         self.mem_dir = self.character_dir / "memory"
         self.mem_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.mem_dir / "memory.db"
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -51,6 +58,7 @@ class CharacterMemoryStore:
 
     def close(self) -> None:
         try:
+            self._conn.commit()
             self._conn.close()
         except Exception:
             pass
@@ -172,7 +180,6 @@ class CharacterMemoryStore:
         return [dict(r) for r in rows]
 
     def list_sticky(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Закреплённые / долгосрочные / профиль — всегда в промпт после рестарта."""
         rows = self._conn.execute(
             """
             SELECT id, category, key, content, importance, pinned, created_at, updated_at
@@ -191,24 +198,23 @@ class CharacterMemoryStore:
         q = (query or "").strip()
         if not q:
             return self.list_recent(limit=limit)
-
         tokens = [
             t for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9_\-]{3,}", q.lower())
             if t not in _STOP
         ]
-        # полное предложение почти никогда не лежит в content целиком
         clauses = ["IFNULL(pinned,0)=1"]
         params: List[Any] = []
         if tokens:
             for tok in tokens[:8]:
-                clauses.append("(LOWER(content) LIKE ? OR LOWER(IFNULL(key,'')) LIKE ? OR LOWER(category) LIKE ?)")
+                clauses.append(
+                    "(LOWER(content) LIKE ? OR LOWER(IFNULL(key,'')) LIKE ? OR LOWER(category) LIKE ?)"
+                )
                 like = f"%{tok}%"
                 params.extend([like, like, like])
         else:
             clauses.append("(LOWER(content) LIKE ? OR LOWER(IFNULL(key,'')) LIKE ?)")
             like = f"%{q.lower()}%"
             params.extend([like, like])
-
         sql = f"""
             SELECT id, category, key, content, importance, pinned, created_at, updated_at
             FROM memories
@@ -219,14 +225,17 @@ class CharacterMemoryStore:
         params.append(max(int(limit) * 3, 16))
         rows = self._conn.execute(sql, params).fetchall()
         now = time.time()
-        out = []
+        out: List[Dict[str, Any]] = []
         seen = set()
         for r in rows:
             rid = int(r["id"])
             if rid in seen:
                 continue
             seen.add(rid)
-            self._conn.execute("UPDATE memories SET last_used=? WHERE id=?", (now, rid))
+            try:
+                self._conn.execute("UPDATE memories SET last_used=? WHERE id=?", (now, rid))
+            except Exception:
+                pass
             out.append(dict(r))
             if len(out) >= int(limit):
                 break
@@ -234,8 +243,7 @@ class CharacterMemoryStore:
         return out
 
     def recall_for_prompt(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
-        """Липкие факты + релевантный поиск. Пустой «привет» тоже поднимает память."""
-        sticky = self.list_sticky(limit=max(int(limit), 8))
+        sticky = self.list_sticky(limit=max(int(limit), 10))
         found = self.search(query, limit=limit) if (query or "").strip() else []
         merged: List[Dict[str, Any]] = []
         seen = set()
@@ -254,9 +262,10 @@ class CharacterMemoryStore:
     def format_for_prompt(self, items: List[Dict[str, Any]], max_chars: int = 2000) -> str:
         if not items:
             return ""
+        who = self.character_id
         lines = [
-            "[долговременная память персонажа — действует после перезапуска, это факты о хозяине и мире]",
-            "Используй эти факты, даже если в текущей реплике их нет.",
+            f"[долговременная память персонажа «{who}» — только этого персонажа, действует после перезапуска]",
+            "Это уже известные факты. Используй их, даже если в текущей реплике их нет. Не путай с памятью другого персонажа.",
         ]
         used = 0
         for it in items:
