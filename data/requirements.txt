@@ -1,3 +1,10 @@
 PyQt5>=5.15
 qasync>=0.27
 aiohttp>=3.8
+Pillow>=10.0
+mss>=9.0
+vosk>=0.3.45
+sounddevice>=0.4.6
+pyttsx3>=2.90
+torch>=2.0.0
+omegaconf>=2.3.0

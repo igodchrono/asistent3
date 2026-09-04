@@ -6,24 +6,59 @@
   "MAX_TOKENS": 1000,
   "PLUGINS_ENABLED": true,
   "PLUGINS": {
+    "auto_messages": true,
     "avatar": true,
+    "browser_search": true,
     "character_log": true,
     "emotion": true,
     "memory": true,
-    "memory_persona": true
+    "memory_persona": true,
+    "pc_control": true,
+    "screen_vision": true,
+    "voice": true
   },
   "PLUGIN_SETTINGS": {
+    "auto_messages": {
+      "enabled": true,
+      "interval_minutes": 1,
+      "chance_percent": 90,
+      "quiet_start": 0,
+      "quiet_end": 8,
+      "allow_flirty": true
+    },
     "avatar": {
       "show": true,
-      "size": 270,
+      "size": 300,
       "always_on_top": true,
       "corner": "bottom_left",
       "anim_ms": 80,
-      "react_to_reply": true,
-      "position": [
-        1706,
-        785
-      ]
+      "react_to_reply": true
+    },
+    "browser_search": {
+      "enabled": true,
+      "search_engine": "google",
+      "browser_name": "default",
+      "browser_path": "",
+      "open_browser": true,
+      "open_best_result": true
+    },
+    "emotion": {
+      "enabled": true,
+      "confidence_threshold": 0.4,
+      "hold_seconds": 20,
+      "add_mood_to_prompt": true
+    },
+    "pc_control": {
+      "enabled": true,
+      "confirmation_timeout": 20,
+      "allow_process_close": true,
+      "allow_window_control": true
+    },
+    "screen_vision": {
+      "enabled": true,
+      "max_side": 1600,
+      "monitor": "2",
+      "save_screenshot": true
     },
     "memory": {
       "enabled": true,
@@ -32,6 +67,19 @@
       "default_pinned": true,
       "search_limit": 8,
       "max_prompt_chars": 2000
+    },
+    "voice": {
+      "listen_enabled": false,
+      "voice_id": "xenia",
+      "microphone_index": -1,
+      "speaker_index": -1,
+      "voice_rate": 175,
+      "voice_volume": 1.0,
+      "stt_engine": "vosk",
+      "tts_engine": "silero",
+      "tts_api_url": "",
+      "tts_api_key": "",
+      "tts_model": "tts-1"
     }
   },
   "ACTIVE_CHARACTER": "лисичка",

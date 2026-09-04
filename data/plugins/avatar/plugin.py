@@ -100,6 +100,26 @@ class PluginImpl(Plugin):
                 print(f"avatar anim: {e}", flush=True)
         return reply
 
+    def apply_emotion(self, emotion: str) -> None:
+        """Применить эмоцию к окну сразу, без ожидания ответа LLM."""
+        if self.app is None or not self.app.get_plugin_setting(self.id, "show", True):
+            return
+        self._ensure_window()
+        if self.win is None:
+            return
+        if not self.win._frames:
+            self._load_active()
+        if not self.win.isVisible():
+            self.win.show()
+        name = str(emotion or "neutral").lower()
+        if not self.win.has(name):
+            return
+        frames = self.win._frames.get(name) or []
+        if len(frames) > 1:
+            self.win.play(name, loop=False)
+        else:
+            self.win.show_static(name)
+
     def _ensure_window(self) -> None:
         if self.win is None:
             self.win = AvatarWindow()

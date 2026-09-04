@@ -26,6 +26,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.engine = engine
         self.loader = loader
+        self._busy = False
         self.setWindowTitle(getattr(config, "WINDOW_TITLE", "Лисичка — ядро"))
         self.resize(int(getattr(config, "WINDOW_WIDTH", 780)), int(getattr(config, "WINDOW_HEIGHT", 700)))
         self.setStyleSheet(WINDOW_QSS)
@@ -62,10 +63,13 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.input.returnPressed.connect(self._on_send)
         self.send_btn = QtWidgets.QPushButton("Отправить")
         self.send_btn.clicked.connect(self._on_send)
+        self.voice_btn = QtWidgets.QPushButton("🎙 Голос")
+        self.voice_btn.clicked.connect(self._toggle_voice)
         self.settings_btn = QtWidgets.QPushButton("⚙ Настройки")
         self.settings_btn.clicked.connect(self._open_settings)
         row.addWidget(self.input, 1)
         row.addWidget(self.send_btn)
+        row.addWidget(self.voice_btn)
         row.addWidget(self.settings_btn)
         layout.addLayout(row)
 
@@ -75,6 +79,33 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.footer)
 
         self._append_sys("Ядро запущено. Подключение: " + str(getattr(config, "API_URL", "")))
+
+    def publish_assistant_message(self, text: str) -> None:
+        """Показать инициативное сообщение без запуска второго запроса к LLM."""
+        text = (text or "").strip()
+        if text:
+            self._append("Ассистент", text)
+
+    def submit_text(self, text: str) -> None:
+        """Передать распознанный текст в обычный обработчик сообщений."""
+        text = (text or "").strip()
+        if text and not self._busy:
+            self.input.setText(text)
+            self._on_send()
+
+    def _toggle_voice(self) -> None:
+        voice = self.engine.app.plugins.get("voice")
+        if voice is None:
+            self._append_sys("Голосовой плагин не загружен.")
+            return
+        if getattr(voice, "_thread", None) is not None and voice._thread.is_alive():
+            voice.stop_listening()
+            self.voice_btn.setText("🎙 Голос")
+            self._append_sys("Микрофон выключен.")
+        else:
+            voice.start_listening()
+            self.voice_btn.setText("⏹ Стоп голос")
+            self._append_sys("Микрофон включён.")
 
     def set_status(self, mode: str, text: str = "") -> None:
         colors = {
@@ -112,6 +143,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.input.clear()
         self._append("Вы", text)
         self.send_btn.setEnabled(False)
+        self._busy = True
         self.set_status("thinking", "думаю…")
         buf = []
         try:
@@ -124,6 +156,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._append("Ошибка", str(e))
             self.set_status("error", "ошибка")
         finally:
+            self._busy = False
             self.send_btn.setEnabled(True)
 
     def closeEvent(self, event) -> None:
