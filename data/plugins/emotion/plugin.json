@@ -1,0 +1,7 @@
+{
+  "id": "emotion",
+  "name": "Эмоциональный слой",
+  "version": "1.0.0",
+  "enabled": true,
+  "description": "Настроение хозяина → hold, mood_addon в промпт, запасная анимация. Анализатор не дублирует — берёт emotion_service."
+}

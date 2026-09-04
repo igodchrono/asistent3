@@ -1,0 +1,53 @@
+# Портативный Python — не заливать
+/python/
+python/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Логи
+logs/
+*.log
+start_error.log
+
+# SQLite служебные файлы
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Базы с данными (раскомментируй строки ниже, если не нужны в репо)
+# *.db
+# assistant_memory.db
+# persistent_memory.db
+# reminders.db
+# advanced_rag.db
+# apps.db
+
+# Секреты
+secret.key
+*.pem
+.env
+.env.*
+
+# Архивы
+*.zip
+*.7z
+*.rar
+
+
+# Системное
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp

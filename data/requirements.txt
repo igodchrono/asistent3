@@ -1,0 +1,3 @@
+PyQt5>=5.15
+qasync>=0.27
+aiohttp>=3.8

@@ -1,0 +1,47 @@
+{
+  "intents": [
+    "chat",
+    "flirty",
+    "launch_app",
+    "love",
+    "notes",
+    "open_browser",
+    "question",
+    "reminder",
+    "screenshot",
+    "search",
+    "system_control",
+    "undress",
+    "volume_control"
+  ],
+  "intent_to_id": {
+    "chat": 0,
+    "flirty": 1,
+    "launch_app": 2,
+    "love": 3,
+    "notes": 4,
+    "open_browser": 5,
+    "question": 6,
+    "reminder": 7,
+    "screenshot": 8,
+    "search": 9,
+    "system_control": 10,
+    "undress": 11,
+    "volume_control": 12
+  },
+  "id_to_intent": {
+    "0": "chat",
+    "1": "flirty",
+    "2": "launch_app",
+    "3": "love",
+    "4": "notes",
+    "5": "open_browser",
+    "6": "question",
+    "7": "reminder",
+    "8": "screenshot",
+    "9": "search",
+    "10": "system_control",
+    "11": "undress",
+    "12": "volume_control"
+  }
+}
