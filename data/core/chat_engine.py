@@ -32,7 +32,6 @@ class ChatEngine:
                 return
 
         system = self.system_prompt
-        # карточка персонажа (ядро); плагин persona может заменить в on_before_llm
         try:
             from character_catalog import read_character_card
             cid = self.app.get_active_character() if hasattr(self.app, "get_active_character") else getattr(self.app.config, "ACTIVE_CHARACTER", "default")
@@ -51,9 +50,15 @@ class ChatEngine:
             except Exception as e:
                 print(f"[plugin {pl.id}] on_before_llm: {e}", flush=True)
 
+        extra: Dict[str, Any] = {}
+        if self.app.state.get("llm_max_tokens"):
+            extra["max_tokens"] = int(self.app.state["llm_max_tokens"])
+        if self.app.state.get("llm_temperature") is not None:
+            extra["temperature"] = float(self.app.state["llm_temperature"])
+
         parts: List[str] = []
         model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
-        async for chunk in self.llm.chat_stream(messages, model=model):
+        async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
         reply = "".join(parts)
@@ -68,16 +73,3 @@ class ChatEngine:
             self.history[-1]["content"] = reply
         else:
             self.history.append({"role": "assistant", "content": reply})
-
-    async def generate_proactive(self, instruction: str) -> str:
-        """Сгенерировать инициативную реплику без повторного запуска plugin hooks."""
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
-        for item in self.history[-12:]:
-            messages.append({"role": item["role"], "content": item["content"]})
-        messages.append({"role": "user", "content": instruction})
-        model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
-        reply = await self.llm.chat_once(messages, model=model, temperature=0.85)
-        reply = str(reply or "").strip()
-        if reply:
-            self.history.append({"role": "assistant", "content": reply})
-        return reply

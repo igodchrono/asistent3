@@ -10,6 +10,7 @@
     "avatar": true,
     "browser_search": true,
     "character_log": true,
+    "deep_think": true,
     "emotion": true,
     "memory": true,
     "memory_persona": true,
@@ -32,7 +33,11 @@
       "always_on_top": true,
       "corner": "bottom_left",
       "anim_ms": 80,
-      "react_to_reply": true
+      "react_to_reply": true,
+      "position": [
+        3347,
+        589
+      ]
     },
     "browser_search": {
       "enabled": true,
@@ -41,6 +46,12 @@
       "browser_path": "",
       "open_browser": true,
       "open_best_result": true
+    },
+    "deep_think": {
+      "enabled": true,
+      "always_on": false,
+      "max_tokens": 4096,
+      "temperature": 0.35
     },
     "emotion": {
       "enabled": true,
@@ -57,7 +68,7 @@
     "screen_vision": {
       "enabled": true,
       "max_side": 1600,
-      "monitor": "2",
+      "monitor": "1",
       "save_screenshot": true
     },
     "memory": {

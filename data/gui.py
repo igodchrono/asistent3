@@ -37,7 +37,6 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        # верхняя полоска
         top = QtWidgets.QHBoxLayout()
         self.title_lab = QtWidgets.QLabel("🦊 Ассистент — ядро")
         self.title_lab.setStyleSheet("color: #f0c27a; font-size: 16px; font-weight: bold;")
@@ -65,11 +64,15 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.send_btn.clicked.connect(self._on_send)
         self.voice_btn = QtWidgets.QPushButton("🎙 Голос")
         self.voice_btn.clicked.connect(self._toggle_voice)
+        self.stop_speech_btn = QtWidgets.QPushButton("⏹ Стоп речь")
+        self.stop_speech_btn.setToolTip("Остановить озвучивание ответа")
+        self.stop_speech_btn.clicked.connect(self._stop_speech)
         self.settings_btn = QtWidgets.QPushButton("⚙ Настройки")
         self.settings_btn.clicked.connect(self._open_settings)
         row.addWidget(self.input, 1)
         row.addWidget(self.send_btn)
         row.addWidget(self.voice_btn)
+        row.addWidget(self.stop_speech_btn)
         row.addWidget(self.settings_btn)
         layout.addLayout(row)
 
@@ -81,20 +84,21 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._append_sys("Ядро запущено. Подключение: " + str(getattr(config, "API_URL", "")))
 
     def publish_assistant_message(self, text: str) -> None:
-        """Показать инициативное сообщение без запуска второго запроса к LLM."""
         text = (text or "").strip()
         if text:
             self._append("Ассистент", text)
 
     def submit_text(self, text: str) -> None:
-        """Передать распознанный текст в обычный обработчик сообщений."""
         text = (text or "").strip()
         if text and not self._busy:
             self.input.setText(text)
             self._on_send()
 
+    def _voice_plugin(self):
+        return self.engine.app.plugins.get("voice") or self.engine.app.state.get("voice_plugin")
+
     def _toggle_voice(self) -> None:
-        voice = self.engine.app.plugins.get("voice")
+        voice = self._voice_plugin()
         if voice is None:
             self._append_sys("Голосовой плагин не загружен.")
             return
@@ -104,8 +108,19 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._append_sys("Микрофон выключен.")
         else:
             voice.start_listening()
-            self.voice_btn.setText("⏹ Стоп голос")
+            self.voice_btn.setText("⏹ Стоп микрофон")
             self._append_sys("Микрофон включён.")
+
+    def _stop_speech(self) -> None:
+        voice = self._voice_plugin()
+        if voice is None:
+            self._append_sys("Голосовой плагин не загружен.")
+            return
+        if hasattr(voice, "stop_speaking"):
+            voice.stop_speaking()
+            self._append_sys("Озвучивание остановлено.")
+        else:
+            self._append_sys("В этой версии голоса нет stop_speaking — замените plugins/voice/plugin.py")
 
     def set_status(self, mode: str, text: str = "") -> None:
         colors = {
@@ -126,7 +141,6 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.footer.setText(
                 f"Плагины: {', '.join(self.engine.app.plugins.keys()) or 'нет'}  |  {getattr(config, 'API_URL', '')}"
             )
-            # обновить LLM client
             try:
                 from core.llm_client import LLMClient
                 self.engine.llm = LLMClient.from_config(config)
@@ -160,6 +174,12 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.send_btn.setEnabled(True)
 
     def closeEvent(self, event) -> None:
+        try:
+            voice = self._voice_plugin()
+            if voice is not None and hasattr(voice, "stop_speaking"):
+                voice.stop_speaking()
+        except Exception:
+            pass
         try:
             if self.loader:
                 self.loader.shutdown_all()
