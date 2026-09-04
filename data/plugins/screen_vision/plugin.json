@@ -1,0 +1,7 @@
+{
+  "id": "screen_vision",
+  "name": "Видение экрана",
+  "version": "1.0.0",
+  "enabled": true,
+  "description": "Снимок монитора и передача изображения vision-модели."
+}

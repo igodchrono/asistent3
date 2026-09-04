@@ -68,3 +68,16 @@ class ChatEngine:
             self.history[-1]["content"] = reply
         else:
             self.history.append({"role": "assistant", "content": reply})
+
+    async def generate_proactive(self, instruction: str) -> str:
+        """Сгенерировать инициативную реплику без повторного запуска plugin hooks."""
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": self.system_prompt}]
+        for item in self.history[-12:]:
+            messages.append({"role": item["role"], "content": item["content"]})
+        messages.append({"role": "user", "content": instruction})
+        model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
+        reply = await self.llm.chat_once(messages, model=model, temperature=0.85)
+        reply = str(reply or "").strip()
+        if reply:
+            self.history.append({"role": "assistant", "content": reply})
+        return reply
