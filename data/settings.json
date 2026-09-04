@@ -15,7 +15,7 @@
   "PLUGIN_SETTINGS": {
     "avatar": {
       "show": true,
-      "size": 280,
+      "size": 250,
       "always_on_top": true,
       "corner": "bottom_right",
       "anim_ms": 80,

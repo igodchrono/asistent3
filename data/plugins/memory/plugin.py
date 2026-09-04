@@ -146,7 +146,18 @@ class PluginImpl(Plugin):
                 break
         limit = int(app.get_plugin_setting(self.id, "search_limit", 8) or 8)
         max_chars = int(app.get_plugin_setting(self.id, "max_prompt_chars", 2000) or 2000)
-        items = self.store.search(user, limit=limit) if user else self.store.list_recent(limit=limit)
+        recall = getattr(self.store, "recall_for_prompt", None)
+        if callable(recall):
+            items = recall(user, limit=limit)
+        else:
+            items = self.store.search(user, limit=limit) if user else self.store.list_recent(limit=limit)
+            sticky = []
+            if hasattr(self.store, "list_sticky"):
+                sticky = self.store.list_sticky(limit=limit)
+            if sticky:
+                seen = {it.get("id") for it in items}
+                items = sticky + [it for it in items if it.get("id") not in seen]
+                items = items[:limit]
         block = self.store.format_for_prompt(items, max_chars=max_chars)
         if not block:
             return messages
