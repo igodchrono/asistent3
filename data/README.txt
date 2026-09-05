@@ -1,25 +1,21 @@
-Стоп речи + глубокое размышление
-================================
+Фикс голоса + эмоций
+====================
 
-Куда копировать (поверх своих файлов):
+Куда копировать:
 
-  data/gui.py
-  data/core/chat_engine.py
   data/plugins/voice/plugin.py
-  data/plugins/deep_think/plugin.py
-  data/plugins/deep_think/__init__.py
-  data/plugins/deep_think/plugin.json
+  data/models/intent_model/micro_models.py
 
 Перезапустить.
 
-1) Стоп озвучки
-   В главном окне кнопка «⏹ Стоп речь».
-   В Настройки → Голос тоже есть «Стоп воспроизведение».
+1) Голос
+   Ошибка: 'NoneType' object has no attribute 'apply_tts'
+   Причина: model.to("cpu") у Silero возвращает None.
+   Теперь модель не затирается, если to() вернул None.
+   Если Silero всё равно не встанет — автопереход на pyttsx3.
 
-2) Глубокое размышление
-   Срабатывает на фразы: подробно, развёрнуто, максимально точно,
-   по шагам, распиши, с примерами, in detail.
-   Тогда поднимается max_tokens (по умолчанию 4096) и в prompt
-   добавляется режим длинного ответа.
-
-   Всегда длинно: Настройки → Плагины → «Всегда длинные ответы».
+2) Эмоции
+   Ошибка: index 5 is out of bounds for axis 0 with size 5
+   Причина: берётся rubert-tiny-toxicity (5 меток), а код ждёт 7 эмоций.
+   Теперь 5 меток мапятся в anger/disgust/fear/neutral.
+   Если есть data/models/emotion_model — грузится она.

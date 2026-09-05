@@ -186,7 +186,7 @@ class PluginImpl(Plugin):
 		text = (text or "").strip()
 		if not text:
 			return
-		self.stop_speaking()
+		self._cancel_speech(quiet=True)
 		self._speak_stop.clear()
 		self._speak_gen += 1
 		gen = self._speak_gen
@@ -194,6 +194,9 @@ class PluginImpl(Plugin):
 
 	def stop_speaking(self) -> None:
 		"""Остановить текущее озвучивание сразу."""
+		self._cancel_speech(quiet=False)
+
+	def _cancel_speech(self, quiet: bool = False) -> None:
 		self._speak_stop.set()
 		self._speak_gen += 1
 		try:
@@ -207,7 +210,8 @@ class PluginImpl(Plugin):
 				eng.stop()
 			except Exception:
 				pass
-		print("voice: воспроизведение остановлено", flush=True)
+		if not quiet:
+			print("voice: воспроизведение остановлено", flush=True)
 
 	def _listen_loop(self) -> None:
 		try:
@@ -264,42 +268,67 @@ class PluginImpl(Plugin):
 				if str(self._setting("tts_engine", "silero") or "silero") == "silero":
 					self._speak_silero(text, gen)
 					return
-				import pyttsx3
-				engine = pyttsx3.init()
-				self._pyttsx_engine = engine
-				engine.setProperty("rate", int(self._setting("voice_rate", 175) or 175))
-				voice_id = str(self._setting("voice_id", "") or "")
-				if voice_id:
-					engine.setProperty("voice", voice_id)
-				engine.setProperty("volume", float(self._setting("voice_volume", 1.0) or 1.0))
-				if self._speak_stop.is_set() or gen != self._speak_gen:
-					engine.stop()
-					return
-				engine.say(text)
-				engine.runAndWait()
-				engine.stop()
-				self._pyttsx_engine = None
+				self._speak_pyttsx3(text, gen)
 			except Exception as exc:
 				print(f"voice: ошибка озвучивания: {exc}", flush=True)
 
-	def _speak_silero(self, text: str, gen: int) -> None:
+	def _speak_pyttsx3(self, text: str, gen: int) -> None:
+		import pyttsx3
+		engine = pyttsx3.init()
+		self._pyttsx_engine = engine
+		engine.setProperty("rate", int(self._setting("voice_rate", 175) or 175))
+		voice_id = str(self._setting("voice_id", "") or "")
+		if voice_id and voice_id not in ("xenia", "kseniya", "baya", "aidar", "eugene"):
+			engine.setProperty("voice", voice_id)
+		engine.setProperty("volume", float(self._setting("voice_volume", 1.0) or 1.0))
+		if self._speak_stop.is_set() or gen != self._speak_gen:
+			engine.stop()
+			return
+		engine.say(text)
+		engine.runAndWait()
+		engine.stop()
+		self._pyttsx_engine = None
+
+	def _ensure_silero(self):
+		if getattr(self, "_silero_model", None) is not None:
+			return self._silero_model
 		import torch
+		loaded = torch.hub.load(
+			"snakers4/silero-models", "silero_tts",
+			language="ru", speaker="v4_ru", trust_repo=True,
+		)
+		model = loaded[0] if isinstance(loaded, (tuple, list)) else loaded
+		if model is None:
+			raise RuntimeError("torch.hub вернул пустую модель Silero")
+		try:
+			moved = model.to("cpu")
+			if moved is not None:
+				model = moved
+		except Exception:
+			pass
+		if not hasattr(model, "apply_tts"):
+			raise RuntimeError(f"Silero без apply_tts: {type(model)}")
+		self._silero_model = model
+		print(f"voice: Silero ready speakers={getattr(model, 'speakers', [])}", flush=True)
+		return model
+
+	def _speak_silero(self, text: str, gen: int) -> None:
 		import sounddevice as sd
 		if self._speak_stop.is_set() or gen != self._speak_gen:
 			return
-		if not hasattr(self, "_silero_model"):
-			model, _ = torch.hub.load(
-				"snakers4/silero-models", "silero_tts", language="ru", speaker="v4_ru",
-				trust_repo=True,
-			)
-			self._silero_model = model.to("cpu")
-			speakers = getattr(self._silero_model, "speakers", [])
-			if speakers and "xenia" not in speakers:
-				print(f"voice: доступные голоса Silero: {speakers}", flush=True)
+		try:
+			model = self._ensure_silero()
+		except Exception as exc:
+			print(f"voice: Silero не загрузилась ({exc}), fallback pyttsx3", flush=True)
+			self._speak_pyttsx3(text, gen)
+			return
 		if self._speak_stop.is_set() or gen != self._speak_gen:
 			return
 		voice = str(self._setting("voice_id", "xenia") or "xenia")
-		audio = self._silero_model.apply_tts(
+		speakers = list(getattr(model, "speakers", []) or [])
+		if speakers and voice not in speakers:
+			voice = "xenia" if "xenia" in speakers else speakers[0]
+		audio = model.apply_tts(
 			text=text, speaker=voice, sample_rate=48000, put_accent=True, put_yo=True,
 		)
 		if self._speak_stop.is_set() or gen != self._speak_gen:

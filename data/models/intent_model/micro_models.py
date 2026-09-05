@@ -389,6 +389,9 @@ class EmotionAnalyzerML:
         self.use_cache = use_cache
         
         try:
+            local = Path(__file__).resolve().parent.parent / "emotion_model"
+            if local.is_dir() and (local / "config.json").is_file():
+                self.model_name = str(local)
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
             self.model.to(self.device)
@@ -480,9 +483,23 @@ class EmotionAnalyzerML:
                 probabilities = torch.softmax(outputs.logits, dim=1)
                 scores = probabilities[0].cpu().numpy()
             
-            result = {}
-            for i, emotion in enumerate(self.EMOTIONS):
-                result[emotion] = float(scores[i])
+            result = {emotion: 0.0 for emotion in self.EMOTIONS}
+            n = int(getattr(scores, "shape", [0])[0]) if hasattr(scores, "shape") else len(scores)
+            # rubert-tiny-toxicity: 5 меток (non-toxic, insult, obscenity, threat, dangerous)
+            # не 7 эмоций — не индексируем scores[5]
+            if n == 5:
+                non_toxic, insult, obscenity, threat, dangerous = [float(scores[i]) for i in range(5)]
+                result["anger"] = max(insult, threat, dangerous)
+                result["disgust"] = obscenity
+                result["fear"] = threat * 0.6
+                result["happiness"] = 0.0
+                result["sadness"] = 0.0
+                result["surprise"] = 0.0
+                result["neutral"] = non_toxic
+            else:
+                for i, emotion in enumerate(self.EMOTIONS):
+                    if i < n:
+                        result[emotion] = float(scores[i])
             
             self._cache_result(cache_key, result)
             return result
