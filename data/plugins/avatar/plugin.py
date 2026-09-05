@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Плагин аватара: окно персонажа, если в его папке есть изображения."""
+"""Плагин аватара: окно персонажа.
+
+v1.0.2: не перебивает emotion-плагин; мягкий fallback кадров.
+"""
 from __future__ import annotations
 
 import re
 from pathlib import Path
 from typing import Optional
 
-from core.plugin_api import AppContext, Plugin, SettingField, HookResult
+from core.plugin_api import AppContext, Plugin, SettingField
 
 from plugins.avatar.window import AvatarWindow, has_avatar_images
 
@@ -25,7 +28,7 @@ _EMOTION_WORDS = {
 class PluginImpl(Plugin):
     id = "avatar"
     name = "Аватар персонажа"
-    version = "1.0.0"
+    version = "1.0.2"
     description = "Окно с картинками из personas/characters/<id>/avatar|images|frames"
     settings_tab = "own"
     settings_tab_title = "Аватар"
@@ -41,7 +44,7 @@ class PluginImpl(Plugin):
             choices=["bottom_right", "bottom_left", "top_right", "top_left"],
         ),
         SettingField("anim_ms", "Скорость анимации (мс)", "int", 80, min_value=30, max_value=500),
-        SettingField("react_to_reply", "Менять кадр по ответу (ANIM/эмоции)", "bool", True),
+        SettingField("react_to_reply", "Менять кадр по [ANIM:] в ответе", "bool", True),
     ]
 
     def __init__(self):
@@ -79,29 +82,26 @@ class PluginImpl(Plugin):
             return reply
         if not self.win or not self.win.isVisible():
             return reply
+
         name = None
         m = _ANIM_RE.search(reply or "")
         if m:
             name = m.group(1).lower()
             reply = _ANIM_RE.sub("", reply).strip()
         else:
+            # emotion-плагин уже выставил кадр — не затираем эвристикой
+            if app.state.get("emotion_from_plugin") and app.state.get("emotion_animation"):
+                return reply
             low = (reply or "").lower()
             for emo, keys in _EMOTION_WORDS.items():
                 if any(k in low for k in keys) and self.win.has(emo):
                     name = emo
                     break
         if name:
-            try:
-                if self.win.has(name) and len(self.win._frames.get(name) or []) > 1:
-                    self.win.play(name, loop=False)
-                else:
-                    self.win.show_static(name)
-            except Exception as e:
-                print(f"avatar anim: {e}", flush=True)
+            self.apply_emotion(name)
         return reply
 
     def apply_emotion(self, emotion: str) -> None:
-        """Применить эмоцию к окну сразу, без ожидания ответа LLM."""
         if self.app is None or not self.app.get_plugin_setting(self.id, "show", True):
             return
         self._ensure_window()
@@ -113,7 +113,18 @@ class PluginImpl(Plugin):
             self.win.show()
         name = str(emotion or "neutral").lower()
         if not self.win.has(name):
-            return
+            # prefix / partial
+            for alt in list(self.win.animation_names()):
+                if alt == name or alt.startswith(name + "_") or name.startswith(alt):
+                    name = alt
+                    break
+            else:
+                for alt in (name.split("_")[0], "neutral", "idle", "happy"):
+                    if self.win.has(alt):
+                        name = alt
+                        break
+                else:
+                    return
         frames = self.win._frames.get(name) or []
         if len(frames) > 1:
             self.win.play(name, loop=False)
@@ -123,7 +134,6 @@ class PluginImpl(Plugin):
     def _ensure_window(self) -> None:
         if self.win is None:
             self.win = AvatarWindow()
-            # дать окну доступ к app для сохранения позиции при перемещении
             try:
                 self.win.app = self.app
             except Exception:
@@ -146,19 +156,27 @@ class PluginImpl(Plugin):
             self.win.hide()
             return
         n = self.win.load_from_character_dir(cdir)
-        print(f"🖼 avatar: {cdir.name} кадров/файлов≈{n} names={self.win.animation_names()[:12]}", flush=True)
-        self.win.show_static("neutral")
-        # Если задано явное положение (position) — использовать его, иначе переместить в угол
+        names = self.win.animation_names()
+        print(f"🖼 avatar: {cdir.name} кадров/файлов≈{n} names={names[:16]}… total={len(names)}", flush=True)
+        self.win.show_static("neutral" if self.win.has("neutral") else (names[0] if names else "neutral"))
         pos = self.app.get_plugin_setting(self.id, "position", None)
         if isinstance(pos, (list, tuple)) and len(pos) == 2:
             try:
-                x, y = int(pos[0]), int(pos[1])
-                self.win.move(x, y)
+                self.win.move(int(pos[0]), int(pos[1]))
             except Exception:
-                corner = str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
-                self.win.move_to_corner(corner)
+                self.win.move_to_corner(
+                    str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
+                )
         else:
-            corner = str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
-            self.win.move_to_corner(corner)
+            self.win.move_to_corner(
+                str(self.app.get_plugin_setting(self.id, "corner", "bottom_right") or "bottom_right")
+            )
         if self.app.get_plugin_setting(self.id, "show", True):
             self.win.show()
+
+
+def register() -> PluginImpl:
+    return PluginImpl()
+
+
+Plugin = PluginImpl

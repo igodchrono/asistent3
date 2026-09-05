@@ -45,15 +45,42 @@ _BLOCK = """
 class PluginImpl(Plugin):
     id = "deep_think"
     name = "Глубокое размышление"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Длинный точный ответ, когда просят подробно / максимально точно"
-    settings_tab = "plugins"
+    # own = отдельная вкладка в настройках (как Голос / Эмоции)
+    settings_tab = "own"
     settings_tab_title = "Глубокое размышление"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField("always_on", "Всегда длинные ответы", "bool", False),
-        SettingField("max_tokens", "Лимит токенов в этом режиме", "int", 4096, min_value=512, max_value=16000),
-        SettingField("temperature", "Температура в этом режиме", "float", 0.35, min_value=0.0, max_value=1.2),
+        SettingField(
+            "max_tokens",
+            "Лимит токенов в этом режиме",
+            "int",
+            4096,
+            min_value=512,
+            max_value=16000,
+        ),
+        SettingField(
+            "temperature",
+            "Температура в этом режиме",
+            "float",
+            0.35,
+            min_value=0.0,
+            max_value=1.2,
+        ),
+        SettingField(
+            "set_thinking_avatar",
+            "Ставить аватару «thinking» в этом режиме",
+            "bool",
+            True,
+        ),
+        SettingField(
+            "extra_triggers",
+            "Доп. триггеры (через |)",
+            "str",
+            "разбери|проанализируй|сравни|аргументируй",
+        ),
     ]
 
     def __init__(self) -> None:
@@ -65,6 +92,16 @@ class PluginImpl(Plugin):
         app.state["deep_think_plugin"] = self
         print("🧠 deep_think: loaded", flush=True)
 
+    def _triggers_match(self, text: str, app: AppContext) -> bool:
+        if _TRIGGER.search(text or ""):
+            return True
+        extra = str(app.get_plugin_setting(self.id, "extra_triggers", "") or "")
+        for part in extra.split("|"):
+            part = part.strip().lower()
+            if part and part in (text or "").lower():
+                return True
+        return False
+
     def on_user_message(self, text: str, app: AppContext) -> None:
         self.app = app
         if not app.get_plugin_setting(self.id, "enabled", True):
@@ -72,12 +109,23 @@ class PluginImpl(Plugin):
             app.state["deep_think"] = False
             return None
         always = bool(app.get_plugin_setting(self.id, "always_on", False))
-        self._active = always or bool(_TRIGGER.search(text or ""))
+        self._active = always or self._triggers_match(text or "", app)
         app.state["deep_think"] = self._active
         if self._active:
-            app.state["llm_max_tokens"] = int(app.get_plugin_setting(self.id, "max_tokens", 4096) or 4096)
-            app.state["llm_temperature"] = float(app.get_plugin_setting(self.id, "temperature", 0.35) or 0.35)
+            app.state["llm_max_tokens"] = int(
+                app.get_plugin_setting(self.id, "max_tokens", 4096) or 4096
+            )
+            app.state["llm_temperature"] = float(
+                app.get_plugin_setting(self.id, "temperature", 0.35) or 0.35
+            )
             print("🧠 deep_think: ON", flush=True)
+            if app.get_plugin_setting(self.id, "set_thinking_avatar", True):
+                emo = app.plugins.get("emotion") or app.state.get("emotion_plugin")
+                if emo is not None and hasattr(emo, "set_context"):
+                    try:
+                        emo.set_context(app, "thinking", "deep_think")
+                    except Exception as e:
+                        print(f"deep_think emotion: {e}", flush=True)
         else:
             app.state.pop("llm_max_tokens", None)
             app.state.pop("llm_temperature", None)
@@ -103,3 +151,10 @@ class PluginImpl(Plugin):
         app.state["deep_think"] = False
         self._active = False
         return reply
+
+
+def register() -> PluginImpl:
+    return PluginImpl()
+
+
+Plugin = PluginImpl

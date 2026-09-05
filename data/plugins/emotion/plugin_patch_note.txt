@@ -1,0 +1,4 @@
+Дополнительно к screen_react: в emotion/plugin.py уже есть правила.
+Если после установки screen_react эмоция на «что на экране» всё ещё neutral —
+убедись, что стоит патч emotion v2.2 из asistent3_emotion_deepthink_v2.zip
+и включён debug_log у screen_react (в консоли будет screen_react: happy/…).
