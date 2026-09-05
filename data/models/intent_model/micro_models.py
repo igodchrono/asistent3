@@ -630,9 +630,9 @@ class HybridAnalyzer:
                 self.rule_based = EmotionalAnalyzer()
                 logger.info("📝 Rule-based анализатор инициализирован")
             except Exception as e:
-                logger.error(f"❌ Ошибка инициализации rule-based анализатора: {e}")
-                self.rule_based = None
-        return self.rule_based
+                logger.debug(f"Rule-based анализатор недоступен: {e}")
+                self.rule_based = False
+        return self.rule_based if self.rule_based else None
     
     def analyze_intent(self, text: str) -> Dict:
         """

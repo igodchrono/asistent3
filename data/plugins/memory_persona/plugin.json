@@ -1,7 +1,1 @@
-{
-  "id": "memory_persona",
-  "name": "Память + смена персонажа",
-  "version": "1.0.0",
-  "enabled": true,
-  "description": "Факты всегда в промпте после рестарта. Смена персонажа сбрасывает кэш карточки и чужой RAG."
-}
+{"id":"memory_persona","name":"Долговременная память","version":"2.0.0","enabled":true}

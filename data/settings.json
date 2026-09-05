@@ -15,6 +15,7 @@
     "memory": true,
     "memory_persona": true,
     "pc_control": true,
+    "screen_react": true,
     "screen_vision": true,
     "voice": true
   },
@@ -33,11 +34,7 @@
       "always_on_top": true,
       "corner": "bottom_left",
       "anim_ms": 80,
-      "react_to_reply": true,
-      "position": [
-        3347,
-        589
-      ]
+      "react_to_reply": true
     },
     "browser_search": {
       "enabled": true,
@@ -51,19 +48,40 @@
       "enabled": true,
       "always_on": false,
       "max_tokens": 4096,
-      "temperature": 0.35
+      "temperature": 0.35,
+      "set_thinking_avatar": true,
+      "extra_triggers": "разбери|проанализируй|сравни|аргументируй"
     },
     "emotion": {
       "enabled": true,
       "confidence_threshold": 0.4,
       "hold_seconds": 20,
-      "add_mood_to_prompt": true
+      "add_mood_to_prompt": true,
+      "apply_before_llm": true,
+      "use_compounds": true,
+      "force_change_on_any_message": true,
+      "debug_log": true
     },
     "pc_control": {
       "enabled": true,
       "confirmation_timeout": 20,
       "allow_process_close": true,
       "allow_window_control": true
+    },
+    "screen_react": {
+      "enabled": true,
+      "interval_seconds": 20,
+      "use_window_title": true,
+      "use_screenshot_hints": true,
+      "react_on_user_screen_question": true,
+      "chat_comments": true,
+      "comment_chance_percent": 15,
+      "min_confidence": 0.45,
+      "hold_same_seconds": 25,
+      "debug_log": true,
+      "quiet_start": 1,
+      "quiet_end": 7,
+      "extra_rules": "bomba=surprised|котик=happy|code=thinking"
     },
     "screen_vision": {
       "enabled": true,
