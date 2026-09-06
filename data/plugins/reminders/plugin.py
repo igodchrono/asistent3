@@ -22,7 +22,7 @@ _RE_CANCEL = re.compile(r"(?i)(отмени|удали)\s+напомин\w*\s*#?
 class PluginImpl(Plugin):
     id = "reminders"
     name = "Напоминания"
-    version = "1.0.0"
+    version = "1.0.1"
     description = "Напомни через N минут/часов"
     settings_tab = "own"
     settings_tab_title = "Напоминания"
@@ -63,12 +63,12 @@ class PluginImpl(Plugin):
         if _RE_LIST.search(t):
             lines = self.list_active()
             msg = "Активные напоминания:\n" + ("\n".join(lines) if lines else "нет")
-            return HookResult(handled=True, response=msg)
+            return HookResult(handled=True, reply=msg)
         m = _RE_CANCEL.search(t)
         if m:
             rid = int(m.group(2)) if m.group(2) else None
             ok = self.cancel(rid)
-            return HookResult(handled=True, response="Напоминание отменено." if ok else "Не найдено.")
+            return HookResult(handled=True, reply="Напоминание отменено." if ok else "Не найдено.")
         m = _RE_IN.search(t)
         if m:
             n = int(m.group(1))
@@ -84,7 +84,7 @@ class PluginImpl(Plugin):
             human = f"{n} {unit}"
             return HookResult(
                 handled=True,
-                response=f"Хорошо, напомню через {human}: «{body}» (#{rid})",
+                reply=f"Хорошо, напомню через {human}: «{body}» (#{rid})",
             )
         return None
 

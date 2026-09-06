@@ -1,1 +1,2 @@
-# Управление ПК через безопасные команды текущего ассистента.
+from .plugin import PluginImpl as Plugin, register
+__all__ = ["Plugin", "register"]
