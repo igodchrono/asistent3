@@ -25,7 +25,7 @@ _SHOW_RE = re.compile(
 class PluginImpl(Plugin):
     id = "memory"
     name = "Память персонажа"
-    version = "1.3.0"
+    version = "1.4.1"
     description = "Своя долговременная память у каждого персонажа"
     settings_tab = "own"
     settings_tab_title = "Память"
@@ -412,6 +412,8 @@ class PluginImpl(Plugin):
             (r"(?i)я\s+живу\s+в\s+([A-Za-zА-Яа-яЁё0-9_\- ,]{2,60})", "user_city"),
             (r"(?i)мой\s+город\s+([A-Za-zА-Яа-яЁё0-9_\- ,]{2,60})", "user_city"),
             (r"(?i)мне\s+(\d{1,3})\s+лет", "user_age"),
+            (r"(?i)я\s+работаю\s+([A-Za-zА-Яа-яЁё0-9_\- ,]{2,60})", "user_job"),
+            (r"(?i)моя\s+работа\s+([A-Za-zА-Яа-яЁё0-9_\- ,]{2,60})", "user_job"),
         ]
         for pat, key in patterns:
             m = re.search(pat, text)
@@ -423,3 +425,10 @@ class PluginImpl(Plugin):
                     importance=0.9,
                     pinned=True,
                 )
+
+
+def register() -> PluginImpl:
+    return PluginImpl()
+
+
+Plugin = PluginImpl

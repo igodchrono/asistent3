@@ -24,11 +24,31 @@ _APP_ALIASES = {
 	"notepad": "notepad.exe",
 	"калькулятор": "calc.exe",
 	"calculator": "calc.exe",
+	"calc": "calc.exe",
 	"проводник": "explorer.exe",
 	"explorer": "explorer.exe",
 	"диспетчер задач": "taskmgr.exe",
 	"диспетчер задачь": "taskmgr.exe",
 	"task manager": "taskmgr.exe",
+}
+
+# Безопасные — закрывать без подтверждения «да»
+_SAFE_CLOSE = {
+	"calc.exe",
+	"calculatorapp.exe",
+	"notepad.exe",
+	"mspaint.exe",
+	"paint.exe",
+	"write.exe",
+	"wordpad.exe",
+}
+
+# Win10/11: calc.exe и/или CalculatorApp.exe
+_CLOSE_ALIASES = {
+	"calc.exe": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
+	"калькулятор": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
+	"calculator": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
+	"calc": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
 }
 
 _SPELLING_FIXES = {
@@ -58,7 +78,7 @@ _SPELLING_FIXES = {
 class PluginImpl(Plugin):
 	id = "pc_control"
 	name = "Управление ПК"
-	version = "1.0.0"
+	version = "1.0.2"
 	description = "Управление приложениями, мультимедиа, окнами и получение информации о Windows."
 	settings_tab = "own"
 	settings_tab_title = "Управление ПК"
@@ -98,11 +118,23 @@ class PluginImpl(Plugin):
 		action, argument = command
 
 		if action in {"close_process", "close_window"}:
-			comment = self._set_emotion_context(app, self._emotion_for_action(action), f"confirm:{action}", f"{action} {argument}")
 			if action == "close_process" and not app.get_plugin_setting(self.id, "allow_process_close", True):
 				return HookResult(True, "Закрытие программ отключено в настройках.")
 			if action == "close_window" and not app.get_plugin_setting(self.id, "allow_window_control", True):
 				return HookResult(True, "Управление окнами отключено в настройках.")
+			# Безопасные приложения (калькулятор, блокнот…) — без подтверждения
+			if action == "close_process" and self._is_safe_close(argument):
+				try:
+					reply = self._execute(action, argument)
+					comment = self._set_emotion_context(
+						app, self._emotion_for_action(action), f"pc:{action}", f"{action} {argument}"
+					)
+					if comment:
+						reply = f"{comment} {reply}"
+					return HookResult(True, reply)
+				except Exception as exc:
+					return HookResult(True, f"Не удалось закрыть: {exc}")
+			comment = self._set_emotion_context(app, self._emotion_for_action(action), f"confirm:{action}", f"{action} {argument}")
 			self._pending = {"action": action, "argument": argument, "created": time.time()}
 			target = argument or "активное окно"
 			prefix = f"{comment} " if comment else ""
@@ -127,14 +159,15 @@ class PluginImpl(Plugin):
 		# По умолчанию используем общее состояние поиска/мыслей.
 		return "searching"
 
+	@staticmethod
 	def _set_emotion_context(app: AppContext, emotion: str, source: str, text: str = "") -> str:
 		plugin = app.plugins.get("emotion") or app.state.get("emotion_plugin")
 		if plugin is not None and hasattr(plugin, "set_context"):
 			if hasattr(plugin, "apply_operation"):
-				return plugin.apply_operation(app, emotion, text, source)
+				return plugin.apply_operation(app, emotion, text, source) or ""
 			plugin.set_context(app, emotion, source)
 			if hasattr(plugin, "operation_comment"):
-				return plugin.operation_comment(emotion)
+				return plugin.operation_comment(emotion) or ""
 		return ""
 
 	def _handle_confirmation(self, text: str, app: AppContext) -> Optional[HookResult]:
@@ -327,17 +360,89 @@ class PluginImpl(Plugin):
 		raise FileNotFoundError(f"приложение или путь не найден: {target}")
 
 	@staticmethod
+	def _is_safe_close(name: str) -> bool:
+		key = (name or "").strip().lower()
+		alias = _APP_ALIASES.get(key, key)
+		if not alias.lower().endswith(".exe"):
+			alias = alias + ".exe"
+		return alias.lower() in _SAFE_CLOSE or key in _CLOSE_ALIASES
+
+	@staticmethod
 	def _close_process(name: str) -> str:
-		image = name.strip().strip('"\'')
-		if not re.fullmatch(r"[\w .-]+(?:\.exe)?", image, re.IGNORECASE):
-			raise ValueError("недопустимое имя процесса")
-		if not image.lower().endswith(".exe"):
-			image += ".exe"
-		result = subprocess.run(["taskkill", "/IM", image, "/T"], capture_output=True, text=True, encoding="cp866", errors="replace")
-		output = (result.stdout or result.stderr or "").strip()
-		if result.returncode != 0:
-			return f"Процесс {image} не найден или не закрыт."
-		return f"Процесс {image} закрыт."
+		raw = name.strip().strip("\"'")
+		key = raw.lower()
+		# Список кандидатов: алиас + варианты Win11 CalculatorApp
+		candidates: List[str] = []
+		if key in _CLOSE_ALIASES:
+			candidates.extend(_CLOSE_ALIASES[key])
+		alias = _APP_ALIASES.get(key, raw)
+		if not alias.lower().endswith(".exe"):
+			alias = alias + ".exe"
+		if alias not in candidates:
+			candidates.insert(0, alias)
+		if raw.lower().endswith(".exe") and raw not in candidates:
+			candidates.insert(0, raw)
+
+		closed: List[str] = []
+		errors: List[str] = []
+		for image in candidates:
+			if not re.fullmatch(r"[\w .-]+(?:\.exe)?", image, re.IGNORECASE):
+				continue
+			if not image.lower().endswith(".exe"):
+				image = image + ".exe"
+			result = subprocess.run(
+				["taskkill", "/IM", image, "/T", "/F"],
+				capture_output=True,
+				text=True,
+				encoding="cp866",
+				errors="replace",
+			)
+			if result.returncode == 0:
+				closed.append(image)
+			else:
+				msg = (result.stdout or result.stderr or "").strip()
+				if msg:
+					errors.append(f"{image}: {msg}")
+		if closed:
+			return f"Закрыто: {', '.join(closed)}."
+		# fallback: попробовать закрыть окно по заголовку через user32
+		try:
+			hwnd = PluginImpl._find_window_by_title(raw)
+			if hwnd:
+				ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+				return f"Отправлено закрытие окна «{raw}»."
+		except Exception:
+			pass
+		detail = "; ".join(errors[:2]) if errors else "процесс не найден"
+		return f"Не удалось закрыть «{raw}» ({detail})."
+
+	@staticmethod
+	def _find_window_by_title(fragment: str) -> int:
+		"""Найти HWND окна, в заголовке которого есть fragment."""
+		user32 = ctypes.windll.user32
+		fragment_l = (fragment or "").lower()
+		found = []
+
+		@ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+		def enum_proc(hwnd, _lparam):
+			if not user32.IsWindowVisible(hwnd):
+				return True
+			buf = ctypes.create_unicode_buffer(512)
+			user32.GetWindowTextW(hwnd, buf, 512)
+			title = buf.value or ""
+			if fragment_l and fragment_l in title.lower():
+				found.append(int(hwnd))
+				return False
+			# рус/eng calculator
+			if any(w in title.lower() for w in ("калькулятор", "calculator")) and any(
+				w in fragment_l for w in ("калькулятор", "calculator", "calc")
+			):
+				found.append(int(hwnd))
+				return False
+			return True
+
+		user32.EnumWindows(enum_proc, 0)
+		return found[0] if found else 0
 
 	@staticmethod
 	def _win32():
@@ -475,3 +580,9 @@ class PluginImpl(Plugin):
 		except Exception:
 			ip = "н/д"
 		return f"Имя компьютера: {hostname}; локальный IP: {ip}"
+
+
+def register():
+	return PluginImpl()
+
+Plugin = PluginImpl

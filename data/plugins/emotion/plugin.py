@@ -55,7 +55,7 @@ MOOD_INSTRUCTIONS = {
 class PluginImpl(Plugin):
     id = "emotion"
     name = "Эмоции"
-    version = "3.0.0"
+    version = "3.0.1"
     description = "EmotionalAnalyzer из asistent2 + кадры + emotions_map.json"
     settings_tab = "own"
     settings_tab_title = "Эмоции"
@@ -178,6 +178,15 @@ class PluginImpl(Plugin):
         return {"emotion": self.emotion, "anim": self.anim, "confidence": self.confidence}
 
     def _analyze(self, app: AppContext, text: str) -> Dict[str, Any]:
+
+        # вопрос про экран → сразу searching (не neutral)
+        low0 = (text or "").lower()
+        if any(p in low0 for p in (
+            "на экране", "на моём экране", "на моем экране", "что видно",
+            "посмотри экран", "что у меня на", "скриншот",
+        )):
+            anim = self._pick_anim(app, "searching")
+            return {"emotion": "searching", "anim": anim, "confidence": 0.75, "source": "screen_ask"}
         # map keywords first
         hit = self._match_map_keywords(app, text)
         if hit:

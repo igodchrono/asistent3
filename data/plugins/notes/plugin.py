@@ -18,7 +18,7 @@ _SEARCH = re.compile(r"(?i)(?:найди\s+в\s+заметк\w*|поиск\s+з�
 class PluginImpl(Plugin):
     id = "notes"
     name = "Заметки"
-    version = "1.0.0"
+    version = "1.0.1"
     description = "Записки в notes.md у персонажа"
     settings_tab = "own"
     settings_tab_title = "Заметки"
@@ -50,13 +50,13 @@ class PluginImpl(Plugin):
             return None
         t = (text or "").strip()
         if _LIST.search(t):
-            return HookResult(handled=True, response=self.list_notes(app))
+            return HookResult(handled=True, reply=self.list_notes(app))
         m = _SEARCH.search(t)
         if m:
-            return HookResult(handled=True, response=self.search(app, m.group(1)))
+            return HookResult(handled=True, reply=self.search(app, m.group(1)))
         m = _ADD.search(t)
         if m:
-            return HookResult(handled=True, response=self.add(app, m.group(1)))
+            return HookResult(handled=True, reply=self.add(app, m.group(1)))
         return None
 
     def on_before_llm(self, messages, app):
