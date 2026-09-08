@@ -25,6 +25,7 @@
     "auto_messages": {
       "enabled": true,
       "interval_minutes": 1,
+      "idle_minutes": 5,
       "chance_percent": 90,
       "quiet_start": 0,
       "quiet_end": 8,
@@ -40,7 +41,7 @@
     "browser_search": {
       "enabled": true,
       "search_engine": "google",
-      "open_browser": true
+      "browser": "default"
     },
     "character_log": {
       "enabled": true
@@ -53,9 +54,6 @@
       "enabled": true,
       "inject_mood": true
     },
-    "notes": {
-      "enabled": true
-    },
     "pc_control": {
       "enabled": true,
       "allow_process_close": true,
@@ -65,20 +63,18 @@
       "enabled": true,
       "max_chunks": 3
     },
-    "reminders": {
-      "enabled": true
-    },
     "screen_react": {
       "enabled": true,
       "interval_sec": 4
     },
-    "screen_vision": {
-      "enabled": true,
-      "max_side": 1600
-    },
     "memory": {
       "enabled": true,
       "max_inject": 12
+    },
+    "screen_vision": {
+      "enabled": true,
+      "max_side": 1600,
+      "monitor": 1
     },
     "voice": {
       "listen_enabled": false,
