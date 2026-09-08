@@ -31,9 +31,12 @@ class PluginImpl(Plugin):
     id = "pc_control"
     name = "Управление ПК"
     version = "2.0.0"
+    settings_tab = "own"
+    settings_tab_title = "Управление ПК"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField("allow_process_close", "Разрешить закрытие программ", "bool", True),
+        SettingField("confirm_danger", "Спрашивать перед очисткой корзины", "bool", True),
     ]
 
     def on_load(self, app: AppContext) -> None:

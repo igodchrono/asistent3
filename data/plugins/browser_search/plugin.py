@@ -50,9 +50,12 @@ class PluginImpl(Plugin):
         q = (query or kwargs.get("text") or "").strip()
         if not q:
             return "Не указан запрос для поиска."
+        q = self._normalize_query(q)
+        if not q:
+            return "Не удалось понять, что искать."
         mode = (mode or "web").lower()
         if mode not in ("web", "images", "video"):
-            mode = self._guess_mode(q)
+            mode = self._guess_mode(query or q)
         url = self._url(q, mode, app)
         if app.get_plugin_setting(self.id, "open_browser", True):
             self._open(url, app)

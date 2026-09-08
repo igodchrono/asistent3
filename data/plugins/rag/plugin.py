@@ -8,7 +8,12 @@ class PluginImpl(Plugin):
     id = "rag"
     name = "RAG"
     version = "2.0.0"
-    settings_schema = [SettingField("enabled", "Включить", "bool", True)]
+    settings_tab = "own"
+    settings_tab_title = "RAG"
+    settings_schema = [
+        SettingField("enabled", "Включить", "bool", True),
+        SettingField("max_chunks", "Кусков в prompt", "int", 3, min_value=1, max_value=20),
+    ]
 
     def on_load(self, app: AppContext) -> None:
         self.chunks = []

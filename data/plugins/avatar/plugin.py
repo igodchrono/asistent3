@@ -33,16 +33,7 @@ class PluginImpl(Plugin):
     settings_tab = "own"
     settings_tab_title = "Аватар"
     settings_schema = [
-        SettingField("show", "Показывать окно аватара", "bool", True),
-        SettingField("size", "Размер (px)", "int", 280, min_value=80, max_value=800),
-        SettingField("always_on_top", "Поверх всех окон", "bool", True),
-        SettingField(
-            "corner",
-            "Угол экрана",
-            "choice",
-            "bottom_right",
-            choices=["bottom_right", "bottom_left", "top_right", "top_left"],
-        ),
+        SettingField("enabled", "Показывать аватар", "bool", True),
         SettingField("anim_ms", "Скорость анимации (мс)", "int", 80, min_value=30, max_value=500),
         SettingField("react_to_reply", "Менять кадр по [ANIM:] в ответе", "bool", True),
     ]

@@ -7,9 +7,11 @@ class PluginImpl(Plugin):
     id = "deep_think"
     name = "Глубокое размышление"
     version = "2.0.0"
+    settings_tab = "own"
+    settings_tab_title = "Глубокое мышление"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
-        SettingField("max_tokens", "Токенов", "int", 4096, min_value=512, max_value=16000),
+        SettingField("max_tokens", "Макс. токенов (подробный ответ)", "int", 4096, min_value=512, max_value=16000),
     ]
 
     def on_load(self, app: AppContext) -> None:

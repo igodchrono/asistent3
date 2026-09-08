@@ -8,7 +8,12 @@ class PluginImpl(Plugin):
     id = "emotion"
     name = "Эмоции"
     version = "4.0.0"
-    settings_schema = [SettingField("enabled", "Включить", "bool", True)]
+    settings_tab = "own"
+    settings_tab_title = "Эмоции"
+    settings_schema = [
+        SettingField("enabled", "Включить", "bool", True),
+        SettingField("inject_mood", "Писать настроение в system prompt", "bool", True),
+    ]
 
     def on_load(self, app: AppContext) -> None:
         app.state.setdefault("emotion", "neutral")

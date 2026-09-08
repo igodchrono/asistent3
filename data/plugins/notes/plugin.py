@@ -9,7 +9,11 @@ class PluginImpl(Plugin):
     id = "notes"
     name = "Заметки"
     version = "2.0.0"
-    settings_schema = [SettingField("enabled", "Включить", "bool", True)]
+    settings_tab = "own"
+    settings_tab_title = "Заметки"
+    settings_schema = [
+        SettingField("enabled", "Включить", "bool", True),
+    ]
 
     def on_user_message(self, text, app):
         from core.plugin_api import HookResult

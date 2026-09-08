@@ -9,9 +9,11 @@ class PluginImpl(Plugin):
     id = "screen_react"
     name = "Реакция на экран"
     version = "2.0.0"
+    settings_tab = "own"
+    settings_tab_title = "Реакция на экран"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
-        SettingField("interval_sec", "Интервал опроса", "int", 4, min_value=2, max_value=30),
+        SettingField("interval_sec", "Интервал опроса (сек)", "int", 4, min_value=2, max_value=30),
     ]
 
     def on_load(self, app: AppContext) -> None:

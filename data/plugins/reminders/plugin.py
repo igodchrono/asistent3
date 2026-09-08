@@ -10,7 +10,11 @@ class PluginImpl(Plugin):
     id = "reminders"
     name = "Напоминания"
     version = "2.1.1"
-    settings_schema = [SettingField("enabled", "Включить", "bool", True)]
+    settings_tab = "own"
+    settings_tab_title = "Напоминания"
+    settings_schema = [
+        SettingField("enabled", "Включить", "bool", True),
+    ]
 
     def on_user_message(self, text, app):
         from core.plugin_api import HookResult
