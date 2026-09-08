@@ -1,21 +1,16 @@
-Фикс голоса + эмоций
-====================
+Тестовые персонажи + матрица запрещённого контента
+==================================================
 
-Куда копировать:
+Персонажи (data/personas/characters/):
+  кошечка   — uncensored_adult: adult_sex ДА; how-to преступлений/нарко/суицид/csam НЕТ
+  ученый    — factual_safe: факты; how-to и порно-стиль НЕТ
+  писатель  — literary: худ. эротика/насилие в сюжете; how-to НЕТ
+  скромница — full_censor: отказ на adult_sex и всё запретное
 
-  data/plugins/voice/plugin.py
-  data/models/intent_model/micro_models.py
+Общий запрет для ВСЕХ: csam (несовершеннолетние в секс-контексте).
 
-Перезапустить.
+См. CONTENT_POLICY_TEST.md
 
-1) Голос
-   Ошибка: 'NoneType' object has no attribute 'apply_tts'
-   Причина: model.to("cpu") у Silero возвращает None.
-   Теперь модель не затирается, если to() вернул None.
-   Если Silero всё равно не встанет — автопереход на pyttsx3.
-
-2) Эмоции
-   Ошибка: index 5 is out of bounds for axis 0 with size 5
-   Причина: берётся rubert-tiny-toxicity (5 меток), а код ждёт 7 эмоций.
-   Теперь 5 меток мапятся в anger/disgust/fear/neutral.
-   Если есть data/models/emotion_model — грузится она.
+Установка: install_test_personas.bat
+Удаление:  cleanup_test_personas.bat
+Тест:      selftest_personas_live.py в data/ + start_selftest_personas_live.bat

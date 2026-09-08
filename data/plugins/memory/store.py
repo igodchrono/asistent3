@@ -283,3 +283,6 @@ class CharacterMemoryStore:
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()
         return int(row["c"] if row else 0)
+
+# alias for plugins
+MemoryStore = CharacterMemoryStore
