@@ -241,6 +241,9 @@ class ChatEngine:
         if not text:
             return
         self.history.append({"role": "user", "content": text})
+        import time as _time
+        self.app.state["last_user_activity"] = _time.time()
+        self.app.state["last_chat_activity"] = _time.time()
 
         # 1) редкие sync-перехваты (голос, подтверждения pc) — если плагин сам handled
         for pl in list(self.app.plugins.values()):

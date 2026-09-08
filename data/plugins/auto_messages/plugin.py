@@ -19,7 +19,9 @@ class PluginImpl(Plugin):
     settings_tab_title = "Авто-сообщения"
     settings_schema = [
         SettingField("enabled", "Включить авто-сообщения", "bool", False),
-        SettingField("interval_minutes", "Проверять каждые (минут)", "int", 5, min_value=1, max_value=1440),
+        SettingField("interval_minutes", "Период между авто-сообщениями (мин)", "int", 10, min_value=1, max_value=1440),
+        SettingField("idle_minutes", "Только после простоя чата (мин)", "int", 5, min_value=1, max_value=120,
+                     help="Не писать, пока пользователь активно переписывается."),
         SettingField("chance_percent", "Вероятность сообщения (%)", "int", 50, min_value=0, max_value=100),
         SettingField("quiet_start", "Начало тихого времени", "int", 23, min_value=0, max_value=23),
         SettingField("quiet_end", "Конец тихого времени", "int", 8, min_value=0, max_value=23),
@@ -121,6 +123,13 @@ class PluginImpl(Plugin):
             return
         if getattr(window, "_busy", False):
             self._log(app, "skip: busy")
+            return
+        # простой чата: last_user_activity
+        idle_need = int(app.get_plugin_setting(self.id, "idle_minutes", 5) or 5) * 60
+        last = float(app.state.get("last_user_activity") or app.state.get("last_chat_activity") or 0)
+        import time as _time
+        if last and (_time.time() - last) < idle_need:
+            self._log(app, f"skip: chat active idle={int(_time.time()-last)}s need>={idle_need}s")
             return
         try:
             visible = window.isVisible() if callable(getattr(window, "isVisible", None)) else True
