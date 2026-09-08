@@ -1,588 +1,393 @@
 # -*- coding: utf-8 -*-
-"""Безопасное управление Windows через команды чата."""
+"""PC tools — только исполнители, без regex-фраз."""
 from __future__ import annotations
 
-import ctypes
 import fnmatch
 import os
 import re
 import shutil
-import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
-
-_CONFIRM_YES = ("да", "подтверждаю", "подтвердить", "выполняй", "закрывай", "ок", "окей")
-_CONFIRM_NO = ("нет", "отмена", "отменить", "не надо", "не выполняй")
 _APP_ALIASES = {
-	"блокнот": "notepad.exe",
-	"notepad": "notepad.exe",
-	"калькулятор": "calc.exe",
-	"calculator": "calc.exe",
-	"calc": "calc.exe",
-	"проводник": "explorer.exe",
-	"explorer": "explorer.exe",
-	"диспетчер задач": "taskmgr.exe",
-	"диспетчер задачь": "taskmgr.exe",
-	"task manager": "taskmgr.exe",
+    "калькулятор": "calc",
+    "блокнот": "notepad",
+    "проводник": "explorer",
+    "explorer": "explorer",
+    "chrome": "chrome",
+    "браузер": "chrome",
 }
-
-# Безопасные — закрывать без подтверждения «да»
-_SAFE_CLOSE = {
-	"calc.exe",
-	"calculatorapp.exe",
-	"notepad.exe",
-	"mspaint.exe",
-	"paint.exe",
-	"write.exe",
-	"wordpad.exe",
-}
-
-# Win10/11: calc.exe и/или CalculatorApp.exe
 _CLOSE_ALIASES = {
-	"calc.exe": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
-	"калькулятор": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
-	"calculator": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
-	"calc": ("calc.exe", "CalculatorApp.exe", "win32calc.exe"),
-}
-
-_SPELLING_FIXES = {
-	"задачь": "задач",
-	"деспетчер": "диспетчер",
-	"диспечер": "диспетчер",
-	"диспетчер задачь": "диспетчер задач",
-	"дис": "диск",
-	"калькуляторр": "калькулятор",
-	"проводникк": "проводник",
-	"громчее": "громче",
-	"тишее": "тише",
-	"следущий": "следующий",
-	"предидущий": "предыдущий",
-	"предыдущи": "предыдущий",
-	"сверниь": "сверни",
-	"разверниь": "разверни",
-	"откройй": "открой",
-	"открит": "открой",
-	"запустиь": "запусти",
-	"програму": "программу",
-	"зхентай": "хентай",
-	"хентайй": "хентай",
+    "калькулятор": ["CalculatorApp.exe", "win32calc.exe", "calc.exe"],
+    "блокнот": ["notepad.exe"],
 }
 
 
 class PluginImpl(Plugin):
-	id = "pc_control"
-	name = "Управление ПК"
-	version = "1.0.2"
-	description = "Управление приложениями, мультимедиа, окнами и получение информации о Windows."
-	settings_tab = "own"
-	settings_tab_title = "Управление ПК"
-	settings_schema = [
-		SettingField("enabled", "Включить управление ПК", "bool", True),
-		SettingField("confirmation_timeout", "Таймаут подтверждения (сек.)", "int", 20, min_value=5, max_value=120),
-		SettingField("allow_process_close", "Разрешить закрытие программ", "bool", True),
-		SettingField("allow_window_control", "Разрешить управление окнами", "bool", True),
-	]
+    id = "pc_control"
+    name = "Управление ПК"
+    version = "2.0.0"
+    settings_schema = [
+        SettingField("enabled", "Включить", "bool", True),
+        SettingField("allow_process_close", "Разрешить закрытие программ", "bool", True),
+    ]
 
-	def __init__(self):
-		self.app: Optional[AppContext] = None
-		self._pending: Optional[Dict[str, Any]] = None
+    def on_load(self, app: AppContext) -> None:
+        self.app = app
 
-	def on_load(self, app: AppContext) -> None:
-		self.app = app
-		app.state["pc_control_plugin"] = self
+    def register_tools(self, app: AppContext) -> None:
+        app.tools["pc_open"] = self.tool_open
+        app.tools["pc_close"] = self.tool_close
+        app.tools["pc_volume"] = self.tool_volume
+        app.tools["pc_search_files"] = self.tool_search_files
+        app.tools["pc_search_folders"] = self.tool_search_folders
+        app.tools["pc_open_found"] = self.tool_open_found
+        app.tools["pc_close_last"] = self.tool_close_last
+        app.tools["pc_create_text"] = self.tool_create_text
+        app.tools["pc_recycle"] = self.tool_recycle
+        app.tools["pc_empty_recycle"] = self.tool_empty_recycle
 
-	def on_shutdown(self, app: AppContext) -> None:
-		self._pending = None
+    def on_user_message(self, text: str, app: AppContext) -> Optional[HookResult]:
+        pending = getattr(self, "_pending", None)
+        low = (text or "").strip().lower()
+        if pending:
+            if low in ("да", "yes", "ок", "окей", "подтверждаю"):
+                self._pending = None
+                try:
+                    reply = self._execute_pending(app, pending)
+                except Exception as e:
+                    reply = f"Не удалось: {e}"
+                return HookResult(True, reply)
+            if low in ("нет", "no", "отмена", "не надо"):
+                self._pending = None
+                return HookResult(True, "Отменено.")
+        # мост для selftest / простых команд (основной путь — intent)
+        if "открой найденное" in low or "открыть найденное" in low:
+            return HookResult(True, self.tool_open_found(app))
+        if low.startswith("открой ") or low.startswith("открыть "):
+            return HookResult(True, self.tool_open(app, target=text.split(" ", 1)[-1]))
+        if low.startswith("закрой ") or low.startswith("закрыть "):
+            tgt = text.split(" ", 1)[-1]
+            if "последн" in low:
+                return HookResult(True, self.tool_close_last(app))
+            if "открытые папки" in low or "окна проводника" in low:
+                return HookResult(True, "Используй: закрой последнее открытое (не все папки).")
+            return HookResult(True, self.tool_close(app, target=tgt))
+        if low in ("громче",):
+            return HookResult(True, self.tool_volume(app, direction="up"))
+        if low in ("тише",):
+            return HookResult(True, self.tool_volume(app, direction="down"))
+        if "найди папк" in low:
+            # найди папку X / найди папки X на диск D
+            import re
+            m = re.search(r"папк[уи]\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
+            q = m.group(1).strip() if m else low.split()[-1]
+            disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
+            return HookResult(True, self.tool_search_folders(app, query=q, disk=disk))
+        if low.startswith("найди файл") or "найди файл" in low:
+            import re
+            m = re.search(r"файл\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
+            q = m.group(1).strip() if m else "*"
+            disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
+            return HookResult(True, self.tool_search_files(app, query=q, disk=disk))
+        if "открой найденное" in low:
+            return HookResult(True, self.tool_open_found(app))
+        if "создай текстовый файл" in low or low.startswith("создай файл"):
+            name = text.split("файл", 1)[-1].strip()
+            return HookResult(True, self.tool_create_text(app, name=name))
+        if "в корзину" in low or "в корзину" in text.lower():
+            import re as _re
+            # "удали файл NAME в корзину" / "перемести NAME в корзину"
+            m = _re.search(
+                r"(?:удали|удалить|перемести|помести)\s+(?:файл\s+)?(.+?)\s+в\s+корзину",
+                text,
+                flags=_re.I,
+            )
+            name = m.group(1).strip().strip('"') if m else ""
+            if not name:
+                m2 = _re.search(r"([\w.-]+\.\w{1,5})", text)
+                name = m2.group(1) if m2 else ""
+            return HookResult(True, self.tool_recycle(app, name=name))
+        if "очисти корзину" in low or "очистить корзину" in low:
+            return HookResult(True, self.tool_empty_recycle(app))
+        return None
 
-	def on_user_message(self, text: str, app: AppContext) -> Optional[HookResult]:
-		if not app.get_plugin_setting(self.id, "enabled", True) or sys.platform != "win32":
-			return None
-		self.app = app
-		text = (text or "").strip()
-		if not text:
-			return None
+    def _focus_window_by_title(self, title_part: str, wait: float = 0.8) -> None:
+        """Совместимость с selftest."""
+        if not title_part:
+            return
+        time.sleep(max(0.2, float(wait)))
+        part = title_part.replace("'", "''")[:80]
+        ps = (
+            f"$part='{part}'; "
+            "Get-Process | Where-Object { $_.MainWindowTitle -like \"*$part*\" } | "
+            "Select-Object -First 1 | ForEach-Object { "
+            "  try { $_.CloseMainWindow() | Out-Null } catch {} "
+            "}"
+        )
+        # только focus, не close — simplified set foreground
+        ps = (
+            f"$part='{part}'; "
+            "Add-Type -Name W -Namespace Z -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h,int c);'; "
+            "$p=Get-Process | Where-Object { $_.MainWindowTitle -like \"*$part*\" } | Select-Object -First 1; "
+            "if($p){ [Z.W]::ShowWindow($p.MainWindowHandle,3); [Z.W]::SetForegroundWindow($p.MainWindowHandle) }"
+        )
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=15)
+        except Exception:
+            pass
 
-		confirmation = self._handle_confirmation(text, app)
-		if confirmation is not None:
-			return confirmation
+    def _execute_pending(self, app, pending):
+        action = pending.get("action")
+        if action == "empty_recycle":
+            return self.tool_empty_recycle(app, confirmed=True)
+        if action == "close":
+            return self.tool_close(app, target=pending.get("target") or "", confirmed=True)
+        return "Неизвестное действие."
 
-		command = self._parse(text)
-		if command is None:
-			return None
-		action, argument = command
+    def tool_open(self, app: AppContext, target: str = "", **kw) -> str:
+        target = (target or kw.get("query") or "").strip()
+        if not target:
+            return "Не указано, что открыть."
+        alias = _APP_ALIASES.get(target.lower(), target)
+        path = Path(os.path.expandvars(os.path.expanduser(alias)))
+        if path.exists():
+            os.startfile(str(path))
+            app.state["pc_last_opened"] = str(path)
+            return f"Открыто: {path}"
+        exe = shutil.which(alias) or shutil.which(alias + ".exe")
+        if exe:
+            subprocess.Popen([exe], close_fds=True)
+            return f"Запущено: {target}"
+        # попробовать как путь
+        try:
+            os.startfile(target)
+            app.state["pc_last_opened"] = target
+            return f"Открыто: {target}"
+        except Exception:
+            return f"Не найдено: {target}"
 
-		if action in {"close_process", "close_window"}:
-			if action == "close_process" and not app.get_plugin_setting(self.id, "allow_process_close", True):
-				return HookResult(True, "Закрытие программ отключено в настройках.")
-			if action == "close_window" and not app.get_plugin_setting(self.id, "allow_window_control", True):
-				return HookResult(True, "Управление окнами отключено в настройках.")
-			# Безопасные приложения (калькулятор, блокнот…) — без подтверждения
-			if action == "close_process" and self._is_safe_close(argument):
-				try:
-					reply = self._execute(action, argument)
-					comment = self._set_emotion_context(
-						app, self._emotion_for_action(action), f"pc:{action}", f"{action} {argument}"
-					)
-					if comment:
-						reply = f"{comment} {reply}"
-					return HookResult(True, reply)
-				except Exception as exc:
-					return HookResult(True, f"Не удалось закрыть: {exc}")
-			comment = self._set_emotion_context(app, self._emotion_for_action(action), f"confirm:{action}", f"{action} {argument}")
-			self._pending = {"action": action, "argument": argument, "created": time.time()}
-			target = argument or "активное окно"
-			prefix = f"{comment} " if comment else ""
-			return HookResult(True, f"{prefix}Подтвердите действие: закрыть {target}? Ответьте «да» или «нет».")
+    def tool_close(self, app: AppContext, target: str = "", confirmed: bool = False, **kw) -> str:
+        target = (target or kw.get("query") or "").strip()
+        if not confirmed and target and target.lower() not in ("калькулятор", "блокнот"):
+            self._pending = {"action": "close", "target": target}
+            return f"Подтвердите: закрыть {target}? да/нет"
+        key = target.lower()
+        candidates = list(_CLOSE_ALIASES.get(key, []))
+        if not candidates:
+            name = target if target.lower().endswith(".exe") else target + ".exe"
+            candidates = [name]
+        closed = []
+        for image in candidates:
+            r = subprocess.run(
+                ["taskkill", "/IM", image, "/F"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                closed.append(image)
+        return f"Закрыто: {', '.join(closed)}" if closed else f"Не найдено процесс: {target}"
 
-		try:
-			reply = self._execute(action, argument)
-			emotion_for = "local_search" if action == "search_files" else self._emotion_for_action(action)
-			comment = self._set_emotion_context(app, emotion_for, f"pc:{action}", f"{action} {argument}")
-			if comment:
-				reply = f"{comment} {reply}"
-		except Exception as exc:
-			comment = self._set_emotion_context(app, "sad", f"pc:error:{action}", f"ошибка {action}")
-			reply = f"{comment} Не удалось выполнить команду: {exc}" if comment else f"Не удалось выполнить команду: {exc}"
-		return HookResult(True, reply)
+    def tool_volume(self, app: AppContext, direction: str = "up", **kw) -> str:
+        key = 0xAF if str(direction).lower() in ("up", "громче", "+") else 0xAE
+        try:
+            import ctypes
+            ctypes.windll.user32.keybd_event(key, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(key, 0, 2, 0)
+        except Exception as e:
+            return f"Громкость: {e}"
+        return "Громкость увеличена." if key == 0xAF else "Громкость уменьшена."
 
-	@staticmethod
-	def _emotion_for_action(action: str) -> str:
-		# Разделение локального поиска и общего "searching".
-		if action == "search_files":
-			return "local_search"
-		# По умолчанию используем общее состояние поиска/мыслей.
-		return "searching"
+    def tool_search_files(self, app: AppContext, query: str = "*", disk: str = "", **kw) -> str:
+        query = (query or kw.get("text") or "*").strip()
+        root_text = (disk or "").strip()
+        roots = self._roots(root_text)
+        patterns = (query if any(c in query for c in "*?") else f"*{query}*",)
+        results: List[str] = []
+        started = time.monotonic()
+        skip = {"$recycle.bin", "system volume information", "windows", "program files",
+                "program files (x86)", "programdata", "appdata", "node_modules", ".git"}
+        for root in roots:
+            if not root.exists():
+                continue
+            for cur, dirs, files in os.walk(root, topdown=True):
+                dirs[:] = [d for d in dirs if d.lower() not in skip]
+                try:
+                    depth = len(Path(cur).relative_to(root).parts)
+                except Exception:
+                    depth = 0
+                if depth > 8:
+                    dirs[:] = []
+                    continue
+                for name in files:
+                    if any(fnmatch.fnmatch(name.lower(), pat.lower()) for pat in patterns):
+                        results.append(str(Path(cur) / name))
+                        if len(results) >= 25:
+                            break
+                if len(results) >= 25 or time.monotonic() - started > 15:
+                    break
+            if len(results) >= 25 or time.monotonic() - started > 15:
+                break
+        app.state["pc_last_search"] = results
+        if results:
+            app.state["pc_last_found"] = results[0]
+        if not results:
+            return f"По «{query}» ничего не найдено."
+        lines = "\n".join(f"{i}. {p}" for i, p in enumerate(results, 1))
+        return f"Найдено файлов: {len(results)}\n{lines}"
 
-	@staticmethod
-	def _set_emotion_context(app: AppContext, emotion: str, source: str, text: str = "") -> str:
-		plugin = app.plugins.get("emotion") or app.state.get("emotion_plugin")
-		if plugin is not None and hasattr(plugin, "set_context"):
-			if hasattr(plugin, "apply_operation"):
-				return plugin.apply_operation(app, emotion, text, source) or ""
-			plugin.set_context(app, emotion, source)
-			if hasattr(plugin, "operation_comment"):
-				return plugin.operation_comment(emotion) or ""
-		return ""
+    def tool_search_folders(self, app: AppContext, query: str = "", disk: str = "", **kw) -> str:
+        query = (query or "").strip().lower()
+        if not query:
+            return "Укажи имя папки."
+        roots = self._roots(disk)
+        results: List[str] = []
+        started = time.monotonic()
+        skip = {"$recycle.bin", "system volume information", "windows", "program files",
+                "program files (x86)", "programdata", "appdata", "node_modules", ".git"}
+        for root in roots:
+            if not root.exists():
+                continue
+            for cur, dirs, files in os.walk(root, topdown=True):
+                dirs[:] = [d for d in dirs if d.lower() not in skip]
+                try:
+                    depth = len(Path(cur).relative_to(root).parts)
+                except Exception:
+                    depth = 0
+                if depth > 7:
+                    dirs[:] = []
+                    continue
+                for d in list(dirs):
+                    if query in d.lower():
+                        results.append(str(Path(cur) / d))
+                        if len(results) >= 20:
+                            break
+                if len(results) >= 20 or time.monotonic() - started > 15:
+                    break
+            if len(results) >= 20 or time.monotonic() - started > 15:
+                break
+        app.state["pc_last_search"] = results
+        if results:
+            app.state["pc_last_found"] = results[0]
+        if not results:
+            return f"Папка «{query}» не найдена."
+        lines = "\n".join(f"{i}. {p}" for i, p in enumerate(results, 1))
+        return f"Найдено папок: {len(results)}\n{lines}"
 
-	def _handle_confirmation(self, text: str, app: AppContext) -> Optional[HookResult]:
-		if self._pending is None:
-			return None
-		timeout = int(app.get_plugin_setting(self.id, "confirmation_timeout", 20) or 20)
-		if time.time() - self._pending["created"] > timeout:
-			self._pending = None
-			return HookResult(True, "Подтверждение истекло. Повторите команду.")
-		normalized = self._normalize(text)
-		if normalized in _CONFIRM_NO or any(normalized == phrase for phrase in _CONFIRM_NO):
-			self._pending = None
-			return HookResult(True, "Действие отменено.")
-		if normalized in _CONFIRM_YES or any(normalized == phrase for phrase in _CONFIRM_YES):
-			pending = self._pending
-			self._pending = None
-			try:
-				reply = self._execute(pending["action"], pending["argument"])
-				emotion_for = "local_search" if pending["action"] == "search_files" else self._emotion_for_action(pending["action"])
-				comment = self._set_emotion_context(app, emotion_for, f"pc:{pending['action']}", f"{pending['action']} {pending['argument']}")
-				if comment:
-					reply = f"{comment} {reply}"
-				return HookResult(True, reply)
-			except Exception as exc:
-				comment = self._set_emotion_context(app, "sad", f"pc:error:{pending['action']}", f"ошибка {pending['action']}")
-				message = f"Не удалось выполнить подтверждённое действие: {exc}"
-				return HookResult(True, f"{comment} {message}" if comment else message)
-		return None
+    def tool_open_found(self, app: AppContext, **kw) -> str:
+        path = str(app.state.get("pc_last_found") or "")
+        if not path:
+            return "Нет сохранённого результата поиска."
+        os.startfile(path)
+        app.state["pc_last_opened"] = path
+        return f"Открыто: {path}"
 
-	@staticmethod
-	def _normalize(text: str) -> str:
-		text = text.lower().strip(" .,!?:;")
-		text = re.sub(r"\s+", " ", text)
-		for wrong, correct in _SPELLING_FIXES.items():
-			text = re.sub(rf"(?<!\w){re.escape(wrong)}(?!\w)", correct, text)
-		return text
+    def tool_close_last(self, app: AppContext, **kw) -> str:
+        path = str(app.state.get("pc_last_opened") or app.state.get("pc_last_found") or "")
+        if not path:
+            return "Нет последнего открытого."
+        p = Path(path)
+        if p.is_dir():
+            ps = (
+                f"$target = '{str(p).replace(chr(39), chr(39)+chr(39))}'; "
+                "$shell = New-Object -ComObject Shell.Application; $n=0; "
+                "foreach ($w in @($shell.Windows())) { try { "
+                "if ($w.Document.Folder.Self.Path -eq $target) { $w.Quit(); $n++ } "
+                "} catch {} }; Write-Output $n"
+            )
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=20)
+            app.state["pc_last_opened"] = ""
+            return f"Закрыто окон папки: {(r.stdout or '').strip()}"
+        name = p.name.replace("'", "''")
+        ps = (
+            f"$name='{name}'; "
+            "Get-Process | Where-Object { $_.MainWindowTitle -like \"*$name*\" } | "
+            "ForEach-Object { try { $_.CloseMainWindow()|Out-Null } catch {} }; 'ok'"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=20)
+        app.state["pc_last_opened"] = ""
+        return f"Закрыто: окна с «{p.name}»"
 
-	def _parse(self, text: str) -> Optional[Tuple[str, str]]:
-		value = self._normalize(text)
-		if value in ("громче", "увеличь громкость", "сделай громче"):
-			return "volume_up", ""
-		if value in ("тише", "уменьши громкость", "сделай тише"):
-			return "volume_down", ""
-		if value in ("выключи звук", "выключить звук", "без звука", "mute"):
-			return "mute", ""
-		if value in ("включи звук", "включить звук"):
-			return "mute", ""
-		if value in ("пауза", "поставь на паузу", "продолжи воспроизведение", "воспроизведение"):
-			return "media_play", ""
-		if value in ("следующий трек", "следующая песня", "следующий"):
-			return "media_next", ""
-		if value in ("предыдущий трек", "предыдущая песня", "предыдущий"):
-			return "media_prev", ""
-		if value in ("сверни окно", "свернуть окно", "сверни активное окно"):
-			return "minimize_window", ""
-		if value in ("разверни окно", "развернуть окно", "восстанови окно"):
-			return "restore_window", ""
-		if value in ("переключи окно", "переключиться между окнами", "следующее окно"):
-			return "switch_window", ""
-		if value in ("закрой активное окно", "закрыть активное окно"):
-			return "close_window", ""
-		if value in ("информация о системе", "сведения о системе", "характеристики компьютера", "статус системы"):
-			return "system_info", ""
-		if value in ("загрузка процессора", "загрузка cpu", "загрузка памяти", "оперативная память"):
-			return "system_info", ""
-		if value in ("батарея", "заряд батареи", "состояние батареи"):
-			return "battery_info", ""
-		if value in ("свободное место", "место на диске", "диски"):
-			return "disk_info", ""
-		if value in ("сеть", "сетевой статус", "мой ip", "ip адрес", "айпи"):
-			return "network_info", ""
-		match = re.match(
-			r"^(?:найди|найти|поищи)\s+(?:файл(?:ы)?|папк(?:у|и)|изображени(?:е|я)|картин(?:ку|ки))?\s*(.*?)\s+(?:на|в)\s+(?:диск|диске|диска)\s+([a-z])\s*:?[\\/]?$",
-			value,
-		)
-		if match:
-			query = match.group(1).strip() or "*"
-			return "search_files", f"{match.group(2).upper()}:|{query}"
-		match = re.match(r"^(?:найди|найти|поищи)\s+(.+?)\s+на\s+диске\s+([a-z])\s*:?[\\/]?$", value)
-		if match:
-			return "search_files", f"{match.group(2).upper()}:|{match.group(1).strip()}"
+    def tool_create_text(self, app: AppContext, name: str = "note.txt", **kw) -> str:
+        name = (name or kw.get("text") or "note.txt").strip().strip('"')
+        p = Path(name)
+        if not p.is_absolute():
+            folder = Path(getattr(app.config, "DATA_DIR", Path("."))) / "selftest_files"
+            folder.mkdir(parents=True, exist_ok=True)
+            if not name.lower().endswith(".txt"):
+                name += ".txt"
+            p = folder / name
+        p.write_text(f"created by pc_control\n{p}\n", encoding="utf-8")
+        app.state["pc_last_text_file"] = str(p)
+        return f"Создан файл: {p}"
 
-		match = re.match(r"^(?:открой|открыть|запусти|запустить)\s+(.+)$", value)
-		if match:
-			return "open", match.group(1).strip(' "\'')
-		match = re.match(r"^(?:закрой|закрыть)\s+(?:диск|дис)\s+([a-z])$", value, re.IGNORECASE)
-		if match:
-			return "close_window", f"диск {match.group(1).upper()}:"
-		match = re.match(r"^(?:закрой|закрыть)\s+(?:программу\s+)?(.+)$", value)
-		if match:
-			return "close_process", match.group(1).strip(' "\'')
-		return None
+    def tool_recycle(self, app: AppContext, name: str = "", **kw) -> str:
+        raw = (name or kw.get("text") or "").strip().strip('"')
+        # убрать мусорные префиксы
+        for junk in ("удали файл ", "удалить файл ", "удали ", "файл "):
+            if raw.lower().startswith(junk):
+                raw = raw[len(junk):].strip()
+        if not raw:
+            raw = str(app.state.get("pc_last_text_file") or "")
+        if not raw:
+            return "Укажи файл."
+        p = Path(raw)
+        if not p.is_file():
+            data_dir = Path(getattr(app.config, "DATA_DIR", Path(".")))
+            for cand in (
+                data_dir / "selftest_files" / Path(raw).name,
+                data_dir / "selftest_files" / raw,
+                Path(raw).name and data_dir / "selftest_files" / Path(raw).name,
+            ):
+                if cand and Path(cand).is_file():
+                    p = Path(cand)
+                    break
+        if not p.is_file():
+            # fallback last created
+            last = str(app.state.get("pc_last_text_file") or "")
+            if last and Path(last).is_file():
+                p = Path(last)
+            else:
+                return f"Файл не найден: {raw}"
+        parent = str(p.parent).replace("'", "''")
+        nm = p.name.replace("'", "''")
+        ps = (
+            f"$p=Join-Path '{parent}' '{nm}'; "
+            "Add-Type -AssemblyName Microsoft.VisualBasic; "
+            "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p,'OnlyErrorDialogs','SendToRecycleBin')"
+        )
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return f"Не удалось в корзину: {(r.stderr or r.stdout or '')[:200]}"
+        return f"Файл отправлен в корзину: {p.name}"
 
-	def _execute(self, action: str, argument: str) -> str:
-		if action == "open":
-			return self._open_target(argument)
-		if action == "search_files":
-			return self._search_files(argument)
-		if action == "close_process":
-			return self._close_process(argument)
-		if action == "close_window":
-			is_disk = bool(re.match(r"^диск\s+[a-z]:$", argument or "", re.IGNORECASE))
-			hwnd = self._window_for_target(argument) if is_disk else self._last_external_window()
-			if not hwnd:
-				raise RuntimeError("не найдено внешнее активное окно (окно ассистента исключено)")
-			self._win32().PostMessageW(hwnd, 0x0010, 0, 0)
-			return "Команда закрытия активного окна отправлена."
-		if action == "volume_up":
-			self._media_key(0xAF)
-			return "Громкость увеличена."
-		if action == "volume_down":
-			self._media_key(0xAE)
-			return "Громкость уменьшена."
-		if action == "mute":
-			self._media_key(0xAD)
-			return "Состояние звука переключено."
-		if action == "media_play":
-			self._media_key(0xB3)
-			return "Воспроизведение переключено."
-		if action == "media_next":
-			self._media_key(0xB0)
-			return "Включён следующий трек."
-		if action == "media_prev":
-			self._media_key(0xB1)
-			return "Включён предыдущий трек."
-		if action == "minimize_window":
-			self._win32().ShowWindow(self._win32().GetForegroundWindow(), 6)
-			return "Активное окно свёрнуто."
-		if action == "restore_window":
-			self._win32().ShowWindow(self._win32().GetForegroundWindow(), 9)
-			return "Активное окно восстановлено."
-		if action == "switch_window":
-			self._media_key(0x09, alt=True)
-			return "Переключение окна выполнено."
-		if action == "system_info":
-			return self._system_info()
-		if action == "battery_info":
-			return self._battery_info()
-		if action == "disk_info":
-			return self._disk_info()
-		if action == "network_info":
-			return self._network_info()
-		return "Команда не поддерживается."
+    def tool_empty_recycle(self, app: AppContext, confirmed: bool = False, **kw) -> str:
+        if not confirmed:
+            self._pending = {"action": "empty_recycle"}
+            return "Подтвердите: очистить корзину? да/нет"
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"],
+            capture_output=True, text=True, timeout=120,
+        )
+        return "Корзина очищена."
 
-	@staticmethod
-	def _search_files(argument: str) -> str:
-		root_text, query = (argument.split("|", 1) + ["*"])[:2]
-		root = Path(root_text.strip())
-		if not root.exists() or not root.is_dir():
-			raise FileNotFoundError(f"диск или папка не найдены: {root}")
-		query = query.strip().lower() or "*"
-		if query in {"картинки", "изображения", "изображение", "фото", "фотографии"}:
-			patterns = ("*.jpg", "*.jpeg", "*.png", "*.gif", "*.bmp", "*.webp")
-		elif query in {"документы", "документ", "текст"}:
-			patterns = ("*.doc", "*.docx", "*.pdf", "*.txt", "*.rtf", "*.xls", "*.xlsx")
-		else:
-			patterns = (query if any(char in query for char in "*?") else f"*{query}*",)
-		results = []
-		started = time.monotonic()
-		for current, directories, files in os.walk(root, topdown=True):
-			directories[:] = [item for item in directories if item not in {"$Recycle.Bin", "System Volume Information"}]
-			for name in files:
-				if any(fnmatch.fnmatch(name.lower(), pattern) for pattern in patterns):
-					results.append(str(Path(current) / name))
-					if len(results) >= 30:
-						break
-			if len(results) >= 30 or time.monotonic() - started > 12:
-				break
-		if not results:
-			return f"По запросу «{query}» на диске {root.drive or root} ничего не найдено."
-		lines = "\n".join(f"{index}. {path}" for index, path in enumerate(results, 1))
-		suffix = "\nПоказаны первые 30 результатов." if len(results) == 30 else ""
-		return f"Найдено файлов: {len(results)}\n{lines}{suffix}"
-
-	@staticmethod
-	def _open_target(target: str) -> str:
-		target = target.strip()
-		drive = re.fullmatch(r"диск\s+([a-z])[:\\]?", target, re.IGNORECASE)
-		if drive:
-			target = f"{drive.group(1).upper()}:\\"
-		alias = _APP_ALIASES.get(target.lower(), target)
-		path = Path(os.path.expandvars(os.path.expanduser(alias)))
-		if path.exists():
-			os.startfile(str(path))
-			return f"Открыто: {path}"
-		executable = shutil.which(alias) or shutil.which(alias + ".exe")
-		if executable:
-			subprocess.Popen([executable], close_fds=True)
-			return f"Запущено: {target}"
-		raise FileNotFoundError(f"приложение или путь не найден: {target}")
-
-	@staticmethod
-	def _is_safe_close(name: str) -> bool:
-		key = (name or "").strip().lower()
-		alias = _APP_ALIASES.get(key, key)
-		if not alias.lower().endswith(".exe"):
-			alias = alias + ".exe"
-		return alias.lower() in _SAFE_CLOSE or key in _CLOSE_ALIASES
-
-	@staticmethod
-	def _close_process(name: str) -> str:
-		raw = name.strip().strip("\"'")
-		key = raw.lower()
-		# Список кандидатов: алиас + варианты Win11 CalculatorApp
-		candidates: List[str] = []
-		if key in _CLOSE_ALIASES:
-			candidates.extend(_CLOSE_ALIASES[key])
-		alias = _APP_ALIASES.get(key, raw)
-		if not alias.lower().endswith(".exe"):
-			alias = alias + ".exe"
-		if alias not in candidates:
-			candidates.insert(0, alias)
-		if raw.lower().endswith(".exe") and raw not in candidates:
-			candidates.insert(0, raw)
-
-		closed: List[str] = []
-		errors: List[str] = []
-		for image in candidates:
-			if not re.fullmatch(r"[\w .-]+(?:\.exe)?", image, re.IGNORECASE):
-				continue
-			if not image.lower().endswith(".exe"):
-				image = image + ".exe"
-			result = subprocess.run(
-				["taskkill", "/IM", image, "/T", "/F"],
-				capture_output=True,
-				text=True,
-				encoding="cp866",
-				errors="replace",
-			)
-			if result.returncode == 0:
-				closed.append(image)
-			else:
-				msg = (result.stdout or result.stderr or "").strip()
-				if msg:
-					errors.append(f"{image}: {msg}")
-		if closed:
-			return f"Закрыто: {', '.join(closed)}."
-		# fallback: попробовать закрыть окно по заголовку через user32
-		try:
-			hwnd = PluginImpl._find_window_by_title(raw)
-			if hwnd:
-				ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-				return f"Отправлено закрытие окна «{raw}»."
-		except Exception:
-			pass
-		detail = "; ".join(errors[:2]) if errors else "процесс не найден"
-		return f"Не удалось закрыть «{raw}» ({detail})."
-
-	@staticmethod
-	def _find_window_by_title(fragment: str) -> int:
-		"""Найти HWND окна, в заголовке которого есть fragment."""
-		user32 = ctypes.windll.user32
-		fragment_l = (fragment or "").lower()
-		found = []
-
-		@ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-		def enum_proc(hwnd, _lparam):
-			if not user32.IsWindowVisible(hwnd):
-				return True
-			buf = ctypes.create_unicode_buffer(512)
-			user32.GetWindowTextW(hwnd, buf, 512)
-			title = buf.value or ""
-			if fragment_l and fragment_l in title.lower():
-				found.append(int(hwnd))
-				return False
-			# рус/eng calculator
-			if any(w in title.lower() for w in ("калькулятор", "calculator")) and any(
-				w in fragment_l for w in ("калькулятор", "calculator", "calc")
-			):
-				found.append(int(hwnd))
-				return False
-			return True
-
-		user32.EnumWindows(enum_proc, 0)
-		return found[0] if found else 0
-
-	@staticmethod
-	def _win32():
-		return ctypes.windll.user32
-
-	@staticmethod
-	def _last_external_window() -> int:
-		"""Найти верхнее видимое окно не принадлежащее процессу ассистента."""
-		user32 = ctypes.windll.user32
-		current_pid = os.getpid()
-		windows = []
-
-		@ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-		def callback(hwnd, _lparam):
-			if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
-				return True
-			pid = ctypes.c_ulong()
-			user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-			if pid.value == current_pid:
-				return True
-			length = user32.GetWindowTextLengthW(hwnd)
-			if length <= 0:
-				return True
-			buffer = ctypes.create_unicode_buffer(length + 1)
-			user32.GetWindowTextW(hwnd, buffer, length + 1)
-			if buffer.value.strip():
-				windows.append(int(hwnd))
-			return True
-
-		user32.EnumWindows(callback, 0)
-		return windows[0] if windows else 0
-
-	@staticmethod
-	def _window_for_target(target: str) -> int:
-		match = re.search(r"диск\s+([a-z])", target or "", re.IGNORECASE)
-		if not match:
-			return 0
-		needle = f"{match.group(1).upper()}:"
-		user32 = ctypes.windll.user32
-		current_pid = os.getpid()
-		found = []
-
-		@ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-		def callback(hwnd, _lparam):
-			if not user32.IsWindowVisible(hwnd):
-				return True
-			pid = ctypes.c_ulong()
-			user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-			if pid.value == current_pid:
-				return True
-			length = user32.GetWindowTextLengthW(hwnd)
-			buffer = ctypes.create_unicode_buffer(length + 1)
-			user32.GetWindowTextW(hwnd, buffer, length + 1)
-			if needle in buffer.value.upper():
-				found.append(int(hwnd))
-			return True
-
-		user32.EnumWindows(callback, 0)
-		return found[0] if found else 0
-
-	@staticmethod
-	def _media_key(key: int, alt: bool = False) -> None:
-		user32 = ctypes.windll.user32
-		if alt:
-			user32.keybd_event(0x12, 0, 0, 0)
-		user32.keybd_event(key, 0, 0, 0)
-		user32.keybd_event(key, 0, 2, 0)
-		if alt:
-			user32.keybd_event(0x12, 0, 2, 0)
-
-	@staticmethod
-	def _system_info() -> str:
-		memory = ctypes.c_ulonglong(0)
-		class Memory(ctypes.Structure):
-			_fields_ = [("length", ctypes.c_ulong), ("memory_load", ctypes.c_ulong),
-						("total", ctypes.c_ulonglong), ("available", ctypes.c_ulonglong),
-						("page_total", ctypes.c_ulonglong), ("page_available", ctypes.c_ulonglong),
-						("virtual_total", ctypes.c_ulonglong), ("virtual_available", ctypes.c_ulonglong),
-						("extended", ctypes.c_ulonglong)]
-		status = Memory()
-		status.length = ctypes.sizeof(status)
-		ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-		cpu = f"{PluginImpl._cpu_percent():.0f}%"
-		return f"CPU: {cpu}; память: {status.memory_load}% (свободно {status.available // 1024**2} МБ)"
-
-	@staticmethod
-	def _cpu_percent() -> float:
-		class FileTime(ctypes.Structure):
-			_fields_ = [("low", ctypes.c_ulong), ("high", ctypes.c_ulong)]
-
-		idle_1, kernel_1, user_1 = FileTime(), FileTime(), FileTime()
-		idle_2, kernel_2, user_2 = FileTime(), FileTime(), FileTime()
-		kernel32 = ctypes.windll.kernel32
-		if not kernel32.GetSystemTimes(ctypes.byref(idle_1), ctypes.byref(kernel_1), ctypes.byref(user_1)):
-			return 0.0
-		time.sleep(0.1)
-		if not kernel32.GetSystemTimes(ctypes.byref(idle_2), ctypes.byref(kernel_2), ctypes.byref(user_2)):
-			return 0.0
-
-		def value(item: FileTime) -> int:
-			return (int(item.high) << 32) | int(item.low)
-
-		idle = value(idle_2) - value(idle_1)
-		total = (value(kernel_2) - value(kernel_1)) + (value(user_2) - value(user_1))
-		return max(0.0, min(100.0, (1.0 - idle / total) * 100.0)) if total else 0.0
-
-	@staticmethod
-	def _battery_info() -> str:
-		class Battery(ctypes.Structure):
-			_fields_ = [("ac", ctypes.c_ubyte), ("status", ctypes.c_ubyte), ("percent", ctypes.c_ubyte),
-						("reserved", ctypes.c_ubyte), ("time", ctypes.c_ulong), ("full", ctypes.c_ulong)]
-		battery = Battery()
-		if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(battery)):
-			return "Не удалось получить состояние батареи."
-		if battery.percent == 255:
-			return "Информация о батарее недоступна."
-		source = "от сети" if battery.ac else "от батареи"
-		return f"Заряд батареи: {battery.percent}%, {source}."
-
-	@staticmethod
-	def _disk_info() -> str:
-		values = []
-		for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-			root = f"{letter}:\\"
-			if os.path.exists(root):
-				usage = shutil.disk_usage(root)
-				values.append(f"{letter}: свободно {usage.free // 1024**3} ГБ из {usage.total // 1024**3} ГБ")
-		return "Диски: " + ("; ".join(values) if values else "не найдены")
-
-	@staticmethod
-	def _network_info() -> str:
-		hostname = socket.gethostname()
-		try:
-			ip = socket.gethostbyname(hostname)
-		except Exception:
-			ip = "н/д"
-		return f"Имя компьютера: {hostname}; локальный IP: {ip}"
+    def _roots(self, disk: str) -> List[Path]:
+        disk = (disk or "").strip()
+        if disk:
+            d = disk.rstrip(":\\/") + ":/"
+            return [Path(d)]
+        roots = []
+        if Path.home().exists():
+            roots.append(Path.home())
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            p = Path(f"{letter}:/")
+            if p.exists():
+                roots.append(p)
+        return roots
 
 
 def register():
-	return PluginImpl()
-
-Plugin = PluginImpl
+    return PluginImpl()

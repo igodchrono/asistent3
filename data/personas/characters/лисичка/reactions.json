@@ -1,0 +1,23 @@
+{
+  "_comment": "Фраза → sprite из avatar/. Редактируется во вкладке Эмоции.",
+  "reactions": [
+    {
+      "phrases": [
+        "кажется они стали больше",
+        "они стали больше"
+      ],
+      "sprite": "point_body",
+      "emotion": "playful",
+      "confidence": 0.97
+    },
+    {
+      "phrases": [
+        "покажи хвостик",
+        "хвостик"
+      ],
+      "sprite": "tail",
+      "emotion": "playful",
+      "confidence": 0.97
+    }
+  ]
+}

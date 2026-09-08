@@ -1,211 +1,121 @@
 # -*- coding: utf-8 -*-
-"""Напоминания через чат + SQLite + таймер."""
 from __future__ import annotations
-
-import re
 import sqlite3
-import threading
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, List, Optional
-
-from core.plugin_api import AppContext, HookResult, Plugin, SettingField
-
-_RE_IN = re.compile(
-    r"(?i)напомин\w*\s+(?:мне\s+)?(?:через\s+)?(\d+)\s*(секунд|сек|минут|мин|час|часа|часов)\s*(?:о\s+том[,]?\s*что\s+|что\s+|:\s*)?(.+)",
-)
-_RE_LIST = re.compile(r"(?i)(список\s+напомин|какие\s+напомин|напомин\w*\s+список)")
-_RE_CANCEL = re.compile(r"(?i)(отмени|удали)\s+напомин\w*\s*#?(\d+)?")
-
+from datetime import datetime, timedelta
+from core.plugin_api import AppContext, Plugin, SettingField
 
 class PluginImpl(Plugin):
     id = "reminders"
     name = "Напоминания"
-    version = "1.0.1"
-    description = "Напомни через N минут/часов"
-    settings_tab = "own"
-    settings_tab_title = "Напоминания"
-    settings_schema = [
-        SettingField("enabled", "Включить", "bool", True),
-        SettingField("check_interval_sec", "Проверка каждые (сек)", "int", 5, min_value=2, max_value=60),
-    ]
+    version = "2.1.1"
+    settings_schema = [SettingField("enabled", "Включить", "bool", True)]
 
-    def __init__(self):
-        self.app: Optional[AppContext] = None
-        self.db_path: Optional[Path] = None
-        self._lock = threading.Lock()
-        self._timer = None
-        self._items: List[dict] = []
-
-    def on_load(self, app: AppContext) -> None:
-        self.app = app
-        base = Path(getattr(app.config, "DATA_DIR", Path(".")))
-        self.db_path = base / "reminders.db"
-        self._init_db()
-        self._load()
-        self._start_timer(app)
-        print(f"⏰ reminders: {self.db_path} active={len(self._items)}", flush=True)
-
-    def on_shutdown(self, app: AppContext) -> None:
-        if self._timer:
-            try:
-                self._timer.stop()
-                self._timer.deleteLater()
-            except Exception:
-                pass
-            self._timer = None
-
-    def on_user_message(self, text: str, app: AppContext) -> Optional[HookResult]:
-        if not app.get_plugin_setting(self.id, "enabled", True):
-            return None
-        t = (text or "").strip()
-        if _RE_LIST.search(t):
-            lines = self.list_active()
-            msg = "Активные напоминания:\n" + ("\n".join(lines) if lines else "нет")
-            return HookResult(handled=True, reply=msg)
-        m = _RE_CANCEL.search(t)
-        if m:
-            rid = int(m.group(2)) if m.group(2) else None
-            ok = self.cancel(rid)
-            return HookResult(handled=True, reply="Напоминание отменено." if ok else "Не найдено.")
-        m = _RE_IN.search(t)
-        if m:
-            n = int(m.group(1))
-            unit = m.group(2).lower()
-            body = (m.group(3) or "напоминание").strip()
-            mult = 1
-            if unit.startswith("мин"):
-                mult = 60
-            elif unit.startswith("час"):
-                mult = 3600
-            seconds = n * mult
-            rid = self.add(body, seconds)
-            human = f"{n} {unit}"
-            return HookResult(
-                handled=True,
-                reply=f"Хорошо, напомню через {human}: «{body}» (#{rid})",
-            )
+    def on_user_message(self, text, app):
+        from core.plugin_api import HookResult
+        low = (text or "").strip().lower()
+        if low.startswith("напомни"):
+            return HookResult(True, self.tool_add(app, text=text))
+        if "напоминания" in low or "список напоминаний" in low:
+            return HookResult(True, self.tool_list(app))
         return None
 
-    def add(self, text: str, seconds: int) -> int:
-        assert self.db_path
-        trigger = datetime.now() + timedelta(seconds=seconds)
-        with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO reminders (text, created_at, trigger_at, seconds, is_active, is_done) VALUES (?,?,?,?,1,0)",
-                (text, datetime.now().isoformat(), trigger.isoformat(), seconds),
-            )
-            conn.commit()
-            rid = int(cur.lastrowid)
-            conn.close()
-            self._items.append({"id": rid, "text": text, "time": time.time() + seconds})
-            return rid
+    def register_tools(self, app: AppContext) -> None:
+        app.tools["reminder_add"] = self.tool_add
+        app.tools["reminder_list"] = self.tool_list
 
-    def list_active(self) -> List[str]:
-        now = time.time()
-        out = []
-        for r in list(self._items):
-            left = max(0, int(r["time"] - now))
-            out.append(f"#{r['id']}: {r['text']} (через {left} сек)")
-        return out
-
-    def cancel(self, rid: Optional[int]) -> bool:
-        if rid is None and self._items:
-            rid = self._items[-1]["id"]
-        if rid is None:
-            return False
-        with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
-            conn.execute("UPDATE reminders SET is_active=0 WHERE id=?", (rid,))
-            conn.commit()
-            conn.close()
-            before = len(self._items)
-            self._items = [r for r in self._items if r["id"] != rid]
-            return len(self._items) < before
-
-    def _init_db(self) -> None:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS reminders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                text TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                trigger_at TEXT NOT NULL,
-                seconds INTEGER,
-                is_active INTEGER DEFAULT 1,
-                is_done INTEGER DEFAULT 0
-            )"""
+    def _db(self, app: AppContext) -> Path:
+        root = Path(getattr(app.config, "DATA_DIR", Path("data")))
+        p = root / "reminders.db"
+        con = sqlite3.connect(str(p))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS reminders ("
+            "id INTEGER PRIMARY KEY, text TEXT, due TEXT, "
+            "done INTEGER DEFAULT 0, created_at REAL, trigger_at REAL)"
         )
-        conn.commit()
-        conn.close()
-
-    def _load(self) -> None:
-        conn = sqlite3.connect(str(self.db_path))
-        rows = conn.execute(
-            "SELECT id, text, trigger_at FROM reminders WHERE is_active=1 AND is_done=0"
-        ).fetchall()
-        conn.close()
-        now = datetime.now()
-        self._items = []
-        for rid, text, trigger_at in rows:
-            try:
-                ts = datetime.fromisoformat(trigger_at)
-                if ts > now:
-                    self._items.append({"id": rid, "text": text, "time": ts.timestamp()})
-            except Exception:
-                pass
-
-    def _start_timer(self, app: AppContext) -> None:
-        try:
-            from PyQt5 import QtCore
-        except ImportError:
-            return
-        self._timer = QtCore.QTimer()
-        sec = int(app.get_plugin_setting(self.id, "check_interval_sec", 5) or 5)
-        self._timer.timeout.connect(lambda: self._tick(app))
-        self._timer.start(max(2, sec) * 1000)
-
-    def _tick(self, app: AppContext) -> None:
-        if not app.get_plugin_setting(self.id, "enabled", True):
-            return
-        now = time.time()
-        due = []
-        with self._lock:
-            for r in list(self._items):
-                if now >= r["time"]:
-                    due.append(r)
-                    self._items.remove(r)
-        for r in due:
-            try:
-                conn = sqlite3.connect(str(self.db_path))
-                conn.execute("UPDATE reminders SET is_done=1 WHERE id=?", (r["id"],))
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-            msg = f"⏰ Напоминание: {r['text']}"
-            window = getattr(app, "window", None)
-            if window is not None and hasattr(window, "publish_assistant_message"):
+        cols = {r[1] for r in con.execute("PRAGMA table_info(reminders)").fetchall()}
+        for col, typ in (
+            ("due", "TEXT"), ("done", "INTEGER"), ("created_at", "REAL"),
+            ("trigger_at", "REAL"), ("text", "TEXT"), ("updated_at", "REAL"),
+        ):
+            if col not in cols:
                 try:
-                    window.publish_assistant_message(msg)
-                except Exception:
-                    print(msg, flush=True)
-            else:
-                print(msg, flush=True)
-            # эмоция
-            emo = app.plugins.get("emotion")
-            if emo is not None and hasattr(emo, "set_context"):
-                try:
-                    emo.set_context(app, "surprised", "reminder")
+                    con.execute(f"ALTER TABLE reminders ADD COLUMN {col} {typ}")
                 except Exception:
                     pass
+        con.commit()
+        con.close()
+        return p
 
+    def tool_add(self, app: AppContext, text: str = "", **kw) -> str:
+        text = (text or kw.get("query") or "").strip() or "напоминание"
+        due_dt = datetime.now() + timedelta(hours=1)
+        due = due_dt.isoformat(timespec="minutes")
+        now = time.time()
+        trigger = due_dt.timestamp()
+        p = self._db(app)
+        con = sqlite3.connect(str(p))
+        info = con.execute("PRAGMA table_info(reminders)").fetchall()
+        # (cid, name, type, notnull, dflt, pk)
+        cols = [r[1] for r in info]
+        notnull = {r[1] for r in info if r[3]}
+        field_vals = {}
+        if "text" in cols:
+            field_vals["text"] = text
+        if "due" in cols:
+            field_vals["due"] = due
+        if "done" in cols:
+            field_vals["done"] = 0
+        if "created_at" in cols:
+            field_vals["created_at"] = now
+        if "trigger_at" in cols:
+            field_vals["trigger_at"] = trigger
+        if "updated_at" in cols:
+            field_vals["updated_at"] = now
+        # любые notnull без значения
+        for c in notnull:
+            if c == "id":
+                continue
+            if c not in field_vals:
+                if "INT" in str(next((r[2] for r in info if r[1]==c), "")).upper() or "REAL" in str(next((r[2] for r in info if r[1]==c), "")).upper():
+                    field_vals[c] = now
+                else:
+                    field_vals[c] = text
+        fields = list(field_vals.keys())
+        values = [field_vals[f] for f in fields]
+        sql = f"INSERT INTO reminders({','.join(fields)}) VALUES({','.join('?'*len(fields))})"
+        try:
+            con.execute(sql, values)
+            con.commit()
+        except Exception as e:
+            con.close()
+            return f"Не удалось создать напоминание: {e}"
+        con.close()
+        return f"Напоминание создано на ~1ч: {text}"
 
-def register() -> PluginImpl:
+    def tool_list(self, app: AppContext, **kw) -> str:
+        p = self._db(app)
+        con = sqlite3.connect(str(p))
+        cols = [r[1] for r in con.execute("PRAGMA table_info(reminders)").fetchall()]
+        try:
+            if "done" in cols and "due" in cols:
+                rows = con.execute(
+                    "SELECT id, text, due FROM reminders WHERE IFNULL(done,0)=0 ORDER BY id DESC LIMIT 20"
+                ).fetchall()
+            elif "due" in cols:
+                rows = con.execute("SELECT id, text, due FROM reminders ORDER BY id DESC LIMIT 20").fetchall()
+            else:
+                rows = [(i, t, "") for i, t in con.execute(
+                    "SELECT id, text FROM reminders ORDER BY id DESC LIMIT 20"
+                ).fetchall()]
+        except Exception as e:
+            con.close()
+            return f"Ошибка списка: {e}"
+        con.close()
+        if not rows:
+            return "Активные напоминания:\nнет"
+        return "Активные напоминания:\n" + "\n".join(f"#{i} {t} (до {d})" for i, t, d in rows)
+
+def register():
     return PluginImpl()
-
-
-Plugin = PluginImpl

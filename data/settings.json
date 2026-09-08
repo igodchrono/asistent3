@@ -1,7 +1,7 @@
 {
   "API_URL": "http://127.0.0.1:1234/v1",
   "API_KEY": "lm-studio",
-  "MODEL_NAME": "qwen3-vl-8b-instruct-abliterated-v2.0",
+  "MODEL_NAME": "qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive",
   "TEMPERATURE": 0.4,
   "MAX_TOKENS": 1000,
   "PLUGINS_ENABLED": true,
@@ -13,8 +13,10 @@
     "deep_think": true,
     "emotion": true,
     "memory": true,
-    "memory_persona": true,
+    "notes": true,
     "pc_control": true,
+    "rag": true,
+    "reminders": true,
     "screen_react": true,
     "screen_vision": true,
     "voice": true
@@ -26,7 +28,9 @@
       "chance_percent": 90,
       "quiet_start": 0,
       "quiet_end": 8,
-      "allow_flirty": true
+      "allow_flirty": true,
+      "use_llm": true,
+      "debug_log": true
     },
     "avatar": {
       "show": true,
@@ -39,66 +43,45 @@
     "browser_search": {
       "enabled": true,
       "search_engine": "google",
-      "browser_name": "default",
-      "browser_path": "",
-      "open_browser": true,
-      "open_best_result": true
+      "open_browser": true
     },
     "deep_think": {
       "enabled": true,
-      "always_on": false,
-      "max_tokens": 4096,
-      "temperature": 0.35,
-      "set_thinking_avatar": true,
-      "extra_triggers": "разбери|проанализируй|сравни|аргументируй"
+      "max_tokens": 4096
     },
     "emotion": {
-      "enabled": true,
-      "confidence_threshold": 0.4,
-      "hold_seconds": 20,
-      "add_mood_to_prompt": true,
-      "apply_before_llm": true,
-      "use_compounds": true,
-      "force_change_on_any_message": true,
-      "debug_log": true
-    },
-    "pc_control": {
-      "enabled": true,
-      "confirmation_timeout": 20,
-      "allow_process_close": true,
-      "allow_window_control": true
-    },
-    "screen_react": {
-      "enabled": true,
-      "interval_seconds": 20,
-      "use_window_title": true,
-      "use_screenshot_hints": true,
-      "react_on_user_screen_question": true,
-      "chat_comments": true,
-      "comment_chance_percent": 15,
-      "min_confidence": 0.45,
-      "hold_same_seconds": 25,
-      "debug_log": true,
-      "quiet_start": 1,
-      "quiet_end": 7,
-      "extra_rules": "bomba=surprised|котик=happy|code=thinking"
-    },
-    "screen_vision": {
-      "enabled": true,
-      "max_side": 1600,
-      "monitor": "1",
-      "save_screenshot": true
+      "enabled": true
     },
     "memory": {
       "enabled": true,
-      "inject_prompt": true,
-      "auto_remember_user": true,
-      "default_pinned": true,
-      "search_limit": 8,
-      "max_prompt_chars": 2000
+      "max_inject": 12
+    },
+    "notes": {
+      "enabled": true
+    },
+    "pc_control": {
+      "enabled": true,
+      "allow_process_close": true
+    },
+    "rag": {
+      "enabled": true
+    },
+    "reminders": {
+      "enabled": true
+    },
+    "screen_react": {
+      "enabled": true,
+      "interval_sec": 4
+    },
+    "screen_vision": {
+      "enabled": true,
+      "max_side": 1600
     },
     "voice": {
       "listen_enabled": false,
+      "wake_enabled": true,
+      "wake_phrase": "лисичка",
+      "wake_window_seconds": 12,
       "voice_id": "xenia",
       "microphone_index": -1,
       "speaker_index": -1,
@@ -111,6 +94,6 @@
       "tts_model": "tts-1"
     }
   },
-  "ACTIVE_CHARACTER": "лисичка",
+  "ACTIVE_CHARACTER": "кошечка",
   "SYSTEM_PROMPT": "Ты полезный ассистент. Отвечай кратко и по делу на языке пользователя."
 }
