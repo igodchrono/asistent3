@@ -72,7 +72,18 @@ class PluginImpl(Plugin):
         if "открой найденное" in low or "открыть найденное" in low:
             return HookResult(True, self.tool_open_found(app))
         if low.startswith("открой ") or low.startswith("открыть "):
-            return HookResult(True, self.tool_open(app, target=text.split(" ", 1)[-1]))
+            target = text.split(" ", 1)[-1].strip()
+            # местоимения / контекст картинки — не файл на диске
+            tlow = target.lower().strip(" .!?,…")
+            pronouns = {
+                "ее", "её", "его", "их", "это", "эту", "этот", "ту", "то",
+                "эту картинку", "эту ссылку", "картинку", "ссылку",
+                "ее в другой вкладке", "её в другой вкладке",
+                "в другой вкладке", "в новой вкладке",
+            }
+            if tlow in pronouns or tlow.startswith("ее ") or tlow.startswith("её "):
+                return None  # пусть browser / intent обработает
+            return HookResult(True, self.tool_open(app, target=target))
         if low.startswith("закрой ") or low.startswith("закрыть "):
             tgt = text.split(" ", 1)[-1]
             if "последн" in low:

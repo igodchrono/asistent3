@@ -62,6 +62,9 @@ class PluginImpl(Plugin):
         wake_en = QtWidgets.QCheckBox("Только после фразы активации (рекомендуется)")
         wake_en.setChecked(bool(self._setting("wake_enabled", True)))
         layout.addWidget(wake_en)
+        speak_en = QtWidgets.QCheckBox("Озвучивать ответы ассистента")
+        speak_en.setChecked(bool(self._setting("speak_enabled", True)))
+        layout.addWidget(speak_en)
         wake_phrase = QtWidgets.QLineEdit(str(self._setting("wake_phrase", "лисичка") or "лисичка"))
         wake_phrase.setPlaceholderText("например: лисичка")
         wake_win = QtWidgets.QSpinBox()
@@ -128,6 +131,7 @@ class PluginImpl(Plugin):
             "voice_volume": volume,
             "listen_enabled": listen,
             "wake_enabled": wake_en,
+            "speak_enabled": speak_en,
             "wake_phrase": wake_phrase,
             "wake_window_seconds": wake_win,
         })
@@ -160,6 +164,7 @@ class PluginImpl(Plugin):
         return {
             "listen_enabled": self._settings_widgets["listen_enabled"].isChecked(),
             "wake_enabled": self._settings_widgets["wake_enabled"].isChecked(),
+            "speak_enabled": self._settings_widgets["speak_enabled"].isChecked(),
             "wake_phrase": self._settings_widgets["wake_phrase"].text().strip() or "лисичка",
             "wake_window_seconds": int(self._settings_widgets["wake_window_seconds"].value()),
             "voice_id": self._settings_widgets["voice_id"].currentData() or "",

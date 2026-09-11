@@ -1,0 +1,270 @@
+{
+  "1": {
+    "inputs": {
+      "filename_prefix": "Qwen-Image",
+      "images": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Сохранить изображение"
+    }
+  },
+  "2": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, distorted eyes, visible camera, photo camera, label, hair",
+      "clip": [
+        "8",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Кодирование текста CLIP (Запрос)"
+    }
+  },
+  "3": {
+    "inputs": {
+      "seed": 30442781131807,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "5",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ],
+      "negative": [
+        "2",
+        0
+      ],
+      "latent_image": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "PROMPT",
+      "clip": [
+        "8",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "shift": 3.1,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "Выборка модели AuraFlow"
+    }
+  },
+  "6": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Декодировать VAE"
+    }
+  },
+  "7": {
+    "inputs": {
+      "lora_name": "Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+      "strength_model": 1,
+      "model": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Загрузчик LoRA (Только модель)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "lora_1": {
+        "on": false,
+        "lora": "greaper-style.safetensors",
+        "strength": 1
+      },
+      "lora_2": {
+        "on": false,
+        "lora": "CockQwen-v3.safetensors",
+        "strength": 0.85
+      },
+      "lora_3": {
+        "on": false,
+        "lora": "Qwen-NSFW-Beta5.safetensors",
+        "strength": 0.75
+      },
+      "lora_4": {
+        "on": false,
+        "lora": "Dynamic Poses V2.safetensors",
+        "strength": 1
+      },
+      "lora_5": {
+        "on": false,
+        "lora": "NSFW Female Enhancer Qwen V0.3.safetensors",
+        "strength": 0.8
+      },
+      "lora_6": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_7": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_8": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_9": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_10": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_11": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_12": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_13": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_14": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_15": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "lora_16": {
+        "on": false,
+        "lora": "",
+        "strength": 1
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "12",
+        0
+      ],
+      "clip": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  },
+  "9": {
+    "inputs": {
+      "resize_type": "scale by multiplier",
+      "resize_type.scale": 2,
+      "quality": "ULTRA",
+      "images": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "RTXVideoSuperResolution",
+    "_meta": {
+      "title": "RTX Video Super Resolution"
+    }
+  },
+  "10": {
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Загрузить CLIP"
+    }
+  },
+  "11": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Загрузить VAE"
+    }
+  },
+  "12": {
+    "inputs": {
+      "unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Загрузить модель диффузии"
+    }
+  },
+  "13": {
+    "inputs": {
+      "width": 1088,
+      "height": 1808,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "Пустой SD3LatentImage"
+    }
+  }
+}

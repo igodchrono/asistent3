@@ -6,28 +6,36 @@
   "MAX_TOKENS": 1000,
   "PLUGINS_ENABLED": true,
   "PLUGINS": {
-    "auto_messages": true,
-    "avatar": true,
-    "browser_search": true,
     "character_log": true,
+    "auto_messages": true,
+    "attachments": true,
     "deep_think": true,
-    "emotion": true,
-    "memory": true,
-    "notes": true,
-    "pc_control": true,
+    "persona": true,
+    "companion": true,
     "rag": true,
     "reminders": true,
+    "screen": true,
     "screen_react": true,
-    "screen_vision": true,
-    "voice": true
+    "voice": true,
+    "notes": true,
+    "browser_search": true,
+    "emotion": true,
+    "memory": true,
+    "phone_media": true,
+    "avatar": true,
+    "pc_control": true
   },
   "PLUGIN_SETTINGS": {
+    "attachments": {
+      "enabled": true,
+      "max_chars": 6000
+    },
     "auto_messages": {
       "enabled": true,
-      "interval_minutes": 1,
+      "interval_minutes": 10,
       "idle_minutes": 5,
-      "chance_percent": 90,
-      "quiet_start": 0,
+      "chance_percent": 50,
+      "quiet_start": 23,
       "quiet_end": 8,
       "allow_flirty": true,
       "use_llm": true,
@@ -35,50 +43,82 @@
     },
     "avatar": {
       "enabled": true,
-      "anim_ms": 80,
-      "react_to_reply": true
+      "position": [
+        1620,
+        751
+      ]
     },
     "browser_search": {
       "enabled": true,
-      "search_engine": "google",
+      "search_engine": "duckduckgo",
+      "open_each_query": true,
       "browser": "default"
     },
     "character_log": {
       "enabled": true
+    },
+    "companion": {
+      "enabled": true,
+      "scene_interval_sec": 45,
+      "suggest_cooldown_min": 12,
+      "suggest_chance": 35,
+      "mood_drift": true,
+      "proactive": true
     },
     "deep_think": {
       "enabled": true,
       "max_tokens": 4096
     },
     "emotion": {
+      "enabled": true
+    },
+    "memory": {
       "enabled": true,
-      "inject_mood": true
+      "max_inject": 12
+    },
+    "notes": {
+      "enabled": true
     },
     "pc_control": {
       "enabled": true,
       "allow_process_close": true,
       "confirm_danger": true
     },
+    "persona": {
+      "enabled": true,
+      "show_avatar": true,
+      "inject_mood": true,
+      "react_to_reply": true,
+      "anim_ms": 80
+    },
+    "phone_media": {
+      "enabled": true,
+      "ask_workflow": true,
+      "comfy_url": "http://127.0.0.1:8188",
+      "positive_prefix": "masterpiece, best quality, anime",
+      "default_workflow": "sdxl",
+      "timeout_sec": 300
+    },
     "rag": {
       "enabled": true,
       "max_chunks": 3
     },
-    "screen_react": {
-      "enabled": true,
-      "interval_sec": 4
+    "reminders": {
+      "enabled": true
     },
-    "memory": {
-      "enabled": true,
-      "max_inject": 12
-    },
-    "screen_vision": {
+    "screen": {
       "enabled": true,
       "max_side": 1600,
       "monitor": 1
     },
+    "screen_react": {
+      "enabled": true
+    },
     "voice": {
+      "enabled": true,
       "listen_enabled": false,
-      "wake_enabled": true,
+      "wake_enabled": false,
+      "speak_enabled": false,
       "wake_phrase": "лисичка",
       "wake_window_seconds": 12,
       "voice_id": "xenia",

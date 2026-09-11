@@ -9,6 +9,15 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from PyQt5.QtCore import Qt, QCoreApplication
+try:
+    QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+except Exception:
+    pass
+try:
+    from PyQt5 import QtWebEngineWidgets  # noqa: F401  # до QApplication
+except Exception:
+    QtWebEngineWidgets = None  # type: ignore
 from PyQt5 import QtWidgets
 from qasync import QEventLoop
 
@@ -41,6 +50,19 @@ def main() -> None:
             print("characters: (нет папок personas/characters/) — вкладка «Персонаж» скрыта", flush=True)
     except Exception as e:
         print(f"characters: {e}", flush=True)
+
+    # Qt WebEngine: атрибут и импорт ДО QApplication
+    try:
+        from PyQt5.QtCore import Qt, QCoreApplication
+        QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    except Exception as e:
+        print(f"Qt AA_ShareOpenGLContexts: {e}", flush=True)
+    try:
+        # обязательный ранний импорт, иначе WebEngine из плагина падает
+        from PyQt5 import QtWebEngineWidgets  # noqa: F401
+        print("QtWebEngineWidgets: preloaded", flush=True)
+    except Exception as e:
+        print(f"QtWebEngineWidgets preload: {e}", flush=True)
 
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Lisichka Core")
