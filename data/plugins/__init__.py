@@ -1,1 +1,1 @@
-# plugins package — сюда кладёте папки плагинов
+# asistent3 plugins (clean)

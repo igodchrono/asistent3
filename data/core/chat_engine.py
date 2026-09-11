@@ -317,19 +317,15 @@ class ChatEngine:
             "\nНе предлагай «найти похожее» без смысла. "
             "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
         )
-        # жёсткая политика SFW-персонажа
-        if self.app.state.get("character_nsfw") is False or self.app.state.get("content_policy") == "full_censor":
-            system += (
-                "\n\n[POLICY full_censor] Ты Скромница/SFW. "
-                "На любые пошлые, эротические, 18+, dirty, explicit запросы — вежливый ОТКАЗ "
-                "одной-двумя фразами («Это неуместно, давай о другом»), без комплиментов и намёков. "
-                "Не пиши эротику даже «мягко»."
-            )
-        elif self.app.state.get("character_nsfw") is True:
-            system += (
-                "\n\n[POLICY uncensored_adult] Взрослый 18+ контент по запросу разрешён. "
-                "CSAM и how-to преступлений/суицида — отказ."
-            )
+        try:
+            from core.policy import build_policy_prompt
+            system += "\n\n" + build_policy_prompt(self.app)
+        except Exception as e:
+            print(f"policy: {e}", flush=True)
+            if self.app.state.get("character_nsfw") is False:
+                system += "\n\n[POLICY SFW] Отказ на 18+."
+            elif self.app.state.get("character_nsfw") is True:
+                system += "\n\n[POLICY NSFW] 18+ по запросу можно. Запреты из policy.json — всегда."
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         for m in self.history[-16:]:

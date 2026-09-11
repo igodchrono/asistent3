@@ -1,0 +1,2 @@
+Вся папка selftest_calibration только для тестов.
+Удаление: rmdir /s /q data\selftest_calibration

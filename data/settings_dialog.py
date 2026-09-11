@@ -33,6 +33,8 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
                 own = QtWidgets.QWidget()
                 if not self._try_plugin_custom_tab(own, meta):
                     self._setup_plugin_own_tab(own, meta)
+                else:
+                    self._ensure_enable_cb(meta["id"])
                 title = meta.get("settings_tab_title") or meta.get("name") or meta.get("id")
                 self.tabs.addTab(own, str(title))
         except Exception as e:
@@ -69,7 +71,18 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
         self.tabs.insertTab(1, w, "🎭 Персонаж")
         self._persona_tab_widget = w
 
+    def _ensure_enable_cb(self, pid: str) -> None:
+        if not hasattr(self, "_plugin_enable_cbs"):
+            self._plugin_enable_cbs = {}
+        if pid in getattr(self, "_plugin_enable_cbs", {}):
+            return
+        from plugin_catalog import is_enabled
+        cb = QtWidgets.QCheckBox()
+        cb.setChecked(is_enabled(pid))
+        self._plugin_enable_cbs[pid] = cb
+
     def _try_plugin_custom_tab(self, tab, meta) -> bool:
+
         """Кастомный UI плагина (например список памяти)."""
         try:
             import importlib
@@ -120,6 +133,11 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
         prev = getattr(config, "ACTIVE_CHARACTER", "default")
         save_settings(data)
         apply_to_config(config)
+        # runtime: выключить tools у отключённых плагинов
+        try:
+            self._apply_plugin_toggles_runtime(data.get("PLUGINS") or {})
+        except Exception as e:
+            print(f"runtime_plugin_toggle: {e}")
         new_ch = getattr(config, "ACTIVE_CHARACTER", prev)
         parent = self.parent()
         engine = getattr(parent, "engine", None) if parent is not None else None

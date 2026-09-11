@@ -141,12 +141,21 @@ class PluginsTabMixin:
         self._plugin_setting_widgets[pid] = widgets
 
     def collect_plugins_settings(self) -> dict:
-        from plugin_catalog import list_plugins_meta, discover_plugin_ids
+        from plugin_catalog import list_plugins_meta, discover_plugin_ids, is_enabled
         metas = {m["id"]: m for m in list_plugins_meta()}
         alive = set(discover_plugin_ids())
-        enabled = {pid: cb.isChecked() for pid, cb in self._plugin_enable_cbs.items() if pid in alive}
+        enabled = {}
+        for pid in alive:
+            cb = getattr(self, "_plugin_enable_cbs", {}).get(pid)
+            if cb is not None:
+                try:
+                    enabled[pid] = bool(cb.isChecked())
+                except Exception:
+                    enabled[pid] = is_enabled(pid)
+            else:
+                enabled[pid] = is_enabled(pid)
         store = {}
-        for pid, widgets in self._plugin_setting_widgets.items():
+        for pid, widgets in getattr(self, "_plugin_setting_widgets", {}).items():
             if pid not in alive:
                 continue
             schema = {f["key"]: f for f in (metas.get(pid) or {}).get("schema") or []}
@@ -154,8 +163,12 @@ class PluginsTabMixin:
             for key, w in widgets.items():
                 field = schema.get(key) or {"type": "str"}
                 block[key] = self._read_setting_widget(field, w)
+            if pid in enabled:
+                block["enabled"] = enabled[pid]
             if block:
                 store[pid] = block
+        for pid, on in enabled.items():
+            store.setdefault(pid, {})["enabled"] = on
         return {
             "PLUGINS_ENABLED": self.plugins_master_cb.isChecked() if hasattr(self, "plugins_master_cb") else True,
             "PLUGINS": enabled,

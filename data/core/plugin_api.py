@@ -74,9 +74,17 @@ class AppContext:
         if not getattr(self.config, "PLUGINS_ENABLED", True):
             return False
         m = getattr(self.config, "PLUGINS", None) or {}
-        if not isinstance(m, dict) or plugin_id not in m:
-            return True
-        return bool(m.get(plugin_id))
+        if isinstance(m, dict) and plugin_id in m:
+            if not m.get(plugin_id):
+                return False
+        # schema "enabled" в PLUGIN_SETTINGS
+        store = getattr(self.config, "PLUGIN_SETTINGS", None) or {}
+        block = store.get(plugin_id) if isinstance(store, dict) else None
+        if isinstance(block, dict) and "enabled" in block:
+            return bool(block.get("enabled"))
+        if isinstance(m, dict) and plugin_id in m:
+            return bool(m.get(plugin_id))
+        return True
 
     def get_plugin_setting(self, plugin_id: str, key: str, default: Any = None) -> Any:
         store = getattr(self.config, "PLUGIN_SETTINGS", None) or {}
