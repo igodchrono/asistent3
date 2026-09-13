@@ -160,6 +160,11 @@ class PluginImpl(Plugin):
             path = self._resolve_wf(wf)
             if not path.exists():
                 return HookResult(True, f"нет файла {path.name}. Положи API-json в workflows/ и повтори имя (qwen/sdxl/z).")
+            if self._is_stub_wf(path):
+                return HookResult(True,
+                    f"{path.name} — заглушка, не граф ComfyUI. "
+                    "В ComfyUI: Save (API Format) → сохрани как workflows/{path.name}. "
+                    "Пока можно «давай qwen» — там живой qwen_image.json.")
             app.state["imggen_stage"] = "busy"
             fam = self._family(wf or path.stem)
             key = {
@@ -302,9 +307,31 @@ class PluginImpl(Plugin):
                     return str(out)
         # openai-совместимый локальный
         try:
-            url = str(app.state.get("llm_url") or "http://127.0.0.1:1234/v1/chat/completions")
-            payload = {"messages": msgs, "temperature": 0.4, "max_tokens": 700}
-            raw = self._post(url, payload, timeout=90)
+            base = str(app.state.get("llm_url") or "http://127.0.0.1:1234/v1").rstrip("/")
+            if base.endswith("/chat/completions"):
+                chat_url = base
+                root = base.rsplit("/chat/completions", 1)[0]
+            else:
+                root = base
+                chat_url = root + "/chat/completions"
+            model = str(app.state.get("llm_model") or "")
+            if not model:
+                try:
+                    rawm = json.loads(self._get(root + "/models", timeout=10).decode("utf-8"))
+                    data = rawm.get("data") or rawm.get("models") or []
+                    if data:
+                        model = str(data[0].get("id") or data[0].get("name") or "")
+                except Exception as e:
+                    print(f"imggen llm models: {e}", flush=True)
+            payload = {
+                "model": model or "local-model",
+                "messages": msgs,
+                "temperature": 0.35,
+                "max_tokens": 800,
+                "stream": False,
+            }
+            print(f"imggen llm POST {chat_url} model={model!r}", flush=True)
+            raw = self._post(chat_url, payload, timeout=120)
             ch = (raw.get("choices") or [{}])[0]
             return str((ch.get("message") or {}).get("content") or "")
         except Exception as e:
@@ -514,6 +541,25 @@ class PluginImpl(Plugin):
         root = Path(__file__).resolve().parents[2] / "generated" / name
         root.mkdir(parents=True, exist_ok=True)
         return root
+
+    def _is_stub_wf(self, path: Path) -> bool:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception:
+            return True
+        if "prompt" in data and isinstance(data["prompt"], dict):
+            data = data["prompt"]
+        if not isinstance(data, dict) or not data:
+            return True
+        # настоящий API-граф: узлы с class_type
+        nodes = 0
+        for k, v in data.items():
+            if str(k).startswith("_"):
+                continue
+            if isinstance(v, dict) and v.get("class_type"):
+                nodes += 1
+        return nodes < 2
 
     def _load_graph(self, path: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
