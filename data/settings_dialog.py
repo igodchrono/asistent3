@@ -152,7 +152,7 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
         try:
             if app_ctx is not None:
                 cid = str(getattr(config, "ACTIVE_CHARACTER", "default"))
-                for pl in list(app_ctx.plugins.values()):
+                for pl in list(getattr(app_ctx, "iter_plugins", lambda: app_ctx.plugins.values())()):
                     try:
                         # Вызов on_character_changed с одинаковыми prev/current заставит плагин
                         # перечитать свои настройки и обновить UI.
@@ -163,3 +163,30 @@ class SettingsDialog(MainTabMixin, PluginsTabMixin, PersonaTabMixin, QtWidgets.Q
             pass
         QtWidgets.QMessageBox.information(self, "OK", "Сохранено.")
         self.accept()
+
+    def _app_ctx(self):
+        parent = self.parent()
+        engine = getattr(parent, "engine", None) if parent is not None else None
+        return getattr(engine, "app", None) if engine is not None else None
+
+    def _apply_plugin_toggles_runtime(self, plugins_map) -> None:
+        app = self._app_ctx()
+        if app is None:
+            return
+        app.tools.clear()
+        it = getattr(app, "iter_plugins", None)
+        plugins = list(it()) if callable(it) else list(app.plugins.values())
+        for pl in plugins:
+            pid = getattr(pl, "id", "")
+            on = True
+            if isinstance(plugins_map, dict) and pid in plugins_map:
+                on = bool(plugins_map.get(pid))
+            if not on or not app.is_plugin_enabled(pid):
+                print(f"🔌 runtime off: {pid}", flush=True)
+                continue
+            try:
+                pl.register_tools(app)
+            except Exception as e:
+                print(f"runtime register_tools {pid}: {e}", flush=True)
+        print(f"runtime tools: {sorted(app.tools)}", flush=True)
+

@@ -1,6 +1,8 @@
 {
-  "search": 11,
+  "search": 12,
   "images": 16,
   "nsfw_talk": 3,
-  "pc": 3
+  "pc": 3,
+  "code_help": 1,
+  "screen": 4
 }

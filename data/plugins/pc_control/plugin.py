@@ -70,6 +70,8 @@ class PluginImpl(Plugin):
                 return HookResult(True, "Отменено.")
         # мост для selftest / простых команд (основной путь — intent)
         if "открой найденное" in low or "открыть найденное" in low:
+            if app.state.get("last_search_query") or app.state.get("last_search_url"):
+                return None  # это выдача браузера, не файл с диска
             return HookResult(True, self.tool_open_found(app))
         if low.startswith("открой ") or low.startswith("открыть "):
             target = text.split(" ", 1)[-1].strip()
@@ -216,10 +218,20 @@ class PluginImpl(Plugin):
         return "Громкость увеличена." if key == 0xAF else "Громкость уменьшена."
 
     def tool_search_files(self, app: AppContext, query: str = "*", disk: str = "", **kw) -> str:
-        query = (query or kw.get("text") or "*").strip()
-        root_text = (disk or "").strip()
+        query = (query or kw.get("text") or kw.get("path") or "*").strip()
+        root_text = (disk or kw.get("disk") or "").strip()
+        if not root_text:
+            root_text = self._disk_from_text(query) or self._disk_from_text(
+                str(getattr(app, "state", {}).get("last_user_text") or "")
+            )
+        if root_text:
+            query = self._strip_disk_phrase(query)
         roots = self._roots(root_text)
-        patterns = (query if any(c in query for c in "*?") else f"*{query}*",)
+        qlow = query.lower()
+        if any(w in qlow for w in ("картин", "фото", "изображ", "обои", "jpg", "png", "webp")):
+            patterns = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.gif", "*.bmp")
+        else:
+            patterns = (query if any(c in query for c in "*?") else f"*{query}*",)
         results: List[str] = []
         started = time.monotonic()
         skip = {"$recycle.bin", "system volume information", "windows", "program files",
@@ -254,10 +266,17 @@ class PluginImpl(Plugin):
         return f"Найдено файлов: {len(results)}\n{lines}"
 
     def tool_search_folders(self, app: AppContext, query: str = "", disk: str = "", **kw) -> str:
-        query = (query or "").strip().lower()
+        query = (query or kw.get("text") or "").strip().lower()
         if not query:
             return "Укажи имя папки."
-        roots = self._roots(disk)
+        root_text = (disk or kw.get("disk") or "").strip()
+        if not root_text:
+            root_text = self._disk_from_text(query) or self._disk_from_text(
+                str(getattr(app, "state", {}).get("last_user_text") or "")
+            )
+        if root_text:
+            query = self._strip_disk_phrase(query)
+        roots = self._roots(root_text)
         results: List[str] = []
         started = time.monotonic()
         skip = {"$recycle.bin", "system volume information", "windows", "program files",
@@ -388,9 +407,33 @@ class PluginImpl(Plugin):
         )
         return "Корзина очищена."
 
+    @staticmethod
+    def _disk_from_text(text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        m = re.search(r"(?:диск[аеу]?\s+|на\s+диске\s+)([A-Za-z])\b", t, re.I)
+        if m:
+            return m.group(1).upper()
+        m = re.search(r"\b([A-Za-z]):(?:\\|/|\s|$)", t)
+        if m:
+            return m.group(1).upper()
+        return ""
+
+    @staticmethod
+    def _strip_disk_phrase(text: str) -> str:
+        t = text or ""
+        t = re.sub(r"(?:на\s+)?диск[аеу]?\s+[A-Za-z]\b", " ", t, flags=re.I)
+        t = re.sub(r"\b[A-Za-z]:(?:\\|/)?", " ", t)
+        t = " ".join(t.split())
+        return t or "*"
+
     def _roots(self, disk: str) -> List[Path]:
         disk = (disk or "").strip()
         if disk:
+            letter = disk[0].upper() if disk else ""
+            if letter.isalpha():
+                return [Path(f"{letter}:/")]
             d = disk.rstrip(":\\/") + ":/"
             return [Path(d)]
         roots = []

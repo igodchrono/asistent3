@@ -45,23 +45,14 @@ class PluginImpl(Plugin):
             return None
         low = (text or "").strip().lower()
         # «открой её / в другой вкладке» после поиска картинок
-        if low.startswith("открой") or low.startswith("открыть"):
-            if any(w in low for w in ("ее", "её", "эту", "картин", "ссылк", "вкладк", "лучш")):
-                if app.state.get("last_search_query") or app.state.get("last_search_url"):
+        if low.startswith("открой") or low.startswith("открыть") or low in ("открой", "открыть"):
+            if app.state.get("last_search_query") or app.state.get("last_search_url") or app.state.get("last_image_pick"):
+                if any(w in low for w in (
+                    "ее", "её", "эту", "это", "ту", "картин", "ссылк", "вкладк",
+                    "лучш", "выбор", "найден", "перв", "открыть",
+                )) or low in ("открой", "открыть"):
                     return HookResult(True, self.tool_open_last(app, text=text))
-        if any(x in low for x in ("файл", "папк", "на диск", "на диске", "в проводнике")):
-            return None
-        explicit = (
-            "найди в интернете", "поищи в интернете", "поищи в сети",
-            "погугли", "загугли", "в гугле",
-            "найди картинки", "найди картинку", "найди фото", "поиск картинок",
-            "найди на youtube", "найди видео",
-        )
-        if not any(t in low for t in explicit):
-            return None
-        mode = self._guess_mode(text)
-        q = self._normalize_query(text)
-        return HookResult(True, self.tool_web_search(app, query=q or text, mode=mode))
+        return None
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["web_search"] = self.tool_web_search
@@ -156,8 +147,8 @@ class PluginImpl(Plugin):
             except Exception:
                 pass
         if len(opened) == 1:
-            return f"SEARCH_OK mode={mode} query={opened[0]}"
-        return f"SEARCH_OK mode={mode} queries={opened}"
+            return f"открыла поиск ({mode}): {opened[0]}"
+        return f"открыла несколько вкладок ({mode}): " + "; ".join(opened)
 
     def tool_search_similar(self, app: AppContext, kind: str = "generic", **kwargs) -> str:
         if app.state.get("ero_game"):
@@ -269,6 +260,7 @@ class PluginImpl(Plugin):
     def _normalize_query(text: str) -> str:
         t = (text or "").strip()
         fluff = [
+            r"^\s*(так\s+)",
             r"^\s*(пожалуйста\s*[,:]?\s*)",
             r"^\s*(можешь|можете)\s+",
             r"^\s*(найди|найти|поищи|поискать|погугли|загугли|поиск)\s+",
@@ -376,7 +368,7 @@ class PluginImpl(Plugin):
 
     def _emotion(self, app: AppContext, q: str) -> None:
         emo = "flirty" if any(w in q.lower() for w in ("18+", "hentai", "хентай", "nsfw")) else "searching"
-        pl = app.plugins.get("emotion")
+        pl = app.plugins.get("persona") or app.state.get("emotion_plugin") or app.plugins.get("emotion")
         if pl and hasattr(pl, "set_context"):
             try:
                 pl.set_context(app, emo, "web_search")

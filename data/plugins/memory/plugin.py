@@ -45,6 +45,9 @@ class PluginImpl(Plugin):
         self._open_store(app)
 
     def on_character_changed(self, character_id: str, previous_id: str, app: AppContext) -> None:
+        if str(character_id or "") == str(previous_id or "") and self.store is not None:
+            self._refresh_list_ui()
+            return
         self._open_store(app)
         self._refresh_list_ui()
 
@@ -53,17 +56,21 @@ class PluginImpl(Plugin):
             print("memory: no MemoryStore", flush=True)
             self.store = None
             return
+        cid = (
+            app.get_active_character()
+            if hasattr(app, "get_active_character")
+            else getattr(app.config, "ACTIVE_CHARACTER", "default")
+        )
+        cid = str(cid)
+        if self.store is not None and str(getattr(self.store, "character_id", "")) == cid:
+            return
         try:
             if self.store is not None:
                 try:
                     self.store.close()
                 except Exception:
                     pass
-            cid = (
-                app.get_active_character()
-                if hasattr(app, "get_active_character")
-                else getattr(app.config, "ACTIVE_CHARACTER", "default")
-            )
+                self.store = None
             root = Path(getattr(app.config, "DATA_DIR", Path("data")))
             char_dir = root / "personas" / "characters" / str(cid)
             char_dir.mkdir(parents=True, exist_ok=True)

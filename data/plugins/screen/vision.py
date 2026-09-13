@@ -93,41 +93,152 @@ class PluginImpl(Plugin):
 
     def tool_describe_screen(self, app: AppContext, **kwargs) -> str:
         if not app.get_plugin_setting(self.id, "enabled", True):
-            return "Видение экрана выключено."
+            # plugin id in settings is "screen" when loaded via wrapper
+            if not app.get_plugin_setting("screen", "enabled", True):
+                return "Видение экрана выключено."
+        mon = kwargs.get("monitor")
+        if mon is not None:
+            try:
+                app.state["screen_monitor_override"] = int(mon)
+            except Exception:
+                pass
         path = self.capture(app)
         if not path:
+            app.state.pop("screen_monitor_override", None)
             return "Не удалось сделать снимок (нужен Pillow / mss)."
         app.state["screen_vision_attach"] = True
         app.state["screen_vision_just_captured"] = True
         app.state["screen_vision_last_path"] = str(path)
-        mon = self._monitor_index(app)
-        info = next((m for m in list_monitors() if m["index"] == mon), None)
-        label = info["label"] if info else str(mon)
+        mon_i = self._monitor_index(app)
+        app.state.pop("screen_monitor_override", None)
+        info = next((m for m in list_monitors() if m["index"] == mon_i), None)
+        label = info["label"] if info else str(mon_i)
         app.state["screen_vision_last_desc"] = f"screenshot:{path.name} | {label}"
+        print(f"screen_vision: shot {path} {label}", flush=True)
         return f"Снимок готов: {label}"
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
         if not app.state.pop("screen_vision_attach", None) and not app.state.get("screen_vision_just_captured"):
             return messages
         app.state["screen_vision_just_captured"] = False
+        path = Path(str(app.state.get("screen_vision_last_path") or ""))
+        if not path.is_file():
+            return messages
+        try:
+            import base64
+            raw = path.read_bytes()
+            if len(raw) < 80:
+                return messages
+            b64 = base64.b64encode(raw).decode("ascii")
+            url = "data:image/jpeg;base64," + b64
+            hint = (
+                "На снимке — то, что сейчас на выбранном мониторе. "
+                "Если сетка картинок: выбери одну (позиция + что на ней). Без нового поиска."
+            )
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    prev = m.get("content")
+                    if isinstance(prev, list):
+                        text = " ".join(
+                            str(p.get("text") or "") for p in prev if isinstance(p, dict)
+                        )
+                    else:
+                        text = str(prev or "")
+                    m["content"] = [
+                        {"type": "text", "text": (text + "\n\n" + hint).strip()},
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ]
+                    print(f"screen_vision: attached {path.name} bytes={len(raw)}", flush=True)
+                    break
+        except Exception as e:
+            print(f"screen_vision: attach fail {e}", flush=True)
         return messages
 
     def on_after_llm(self, reply: str, app: AppContext) -> str:
         text = reply or ""
-        keys = self._keywords(text)
-        if keys and not any(w in keys for w in ("день", "вечер", "утром", "лови", "ищу", "жми")):
-            app.state["screen_vision_search_query"] = keys
-            print(f"screen_vision: search_query={keys!r}", flush=True)
-            if any(p in text.lower() for p in ("похож", "similar", "найти картин")):
-                app.state["screen_vision_pending_similar"] = True
-        return reply
+        m = re.search(r"PICK:\s*(.+)", text, re.I)
+        if m:
+            pick = m.group(1).strip().split("\n")[0][:120]
+            app.state["last_image_pick"] = pick
+            print(f"screen_vision: PICK={pick!r}", flush=True)
+            text = re.sub(r"\s*PICK:\s*.+", "", text, count=1, flags=re.I).strip()
+        return text
 
     def _monitor_index(self, app: AppContext) -> int:
-        raw = app.get_plugin_setting(self.id, "monitor", 1)
+        ov = app.state.get("screen_monitor_override")
+        if ov is not None:
+            try:
+                return int(ov)
+            except Exception:
+                pass
+        if app.state.pop("screen_capture_search", None):
+            found = self._monitor_with_browser(app)
+            if found is not None:
+                print(f"screen_vision: browser monitor → {found}", flush=True)
+                return found
+            print("screen_vision: browser window not found → all screens", flush=True)
+            return 0
+        for pid in ("screen", self.id):
+            raw = app.get_plugin_setting(pid, "monitor", None)
+            if raw is not None:
+                try:
+                    return int(str(raw).split()[0])
+                except Exception:
+                    pass
+        return 1
+
+    @staticmethod
+    def _monitor_with_browser(app: AppContext) -> Optional[int]:
+        """Монитор, где открыт поиск (Chrome/Edge заголовок с запросом)."""
+        q = str(app.state.get("last_search_query") or "").strip().lower()
         try:
-            return int(str(raw).split()[0])
-        except Exception:
-            return 1
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            found = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            def cb(hwnd, _lp):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                n = user32.GetWindowTextLengthW(hwnd)
+                if n < 4:
+                    return True
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                title = buf.value or ""
+                tl = title.lower()
+                if not any(b in tl for b in ("chrome", "firefox", "edge", "opera", "brave", "yandex")):
+                    return True
+                score = 0
+                if q and q[:24] in tl:
+                    score += 5
+                if any(w in tl for w in ("google", "поиск", "search", "images", "картин", "яндекс")):
+                    score += 2
+                if score:
+                    rect = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    found.append((score, rect.left, rect.top, rect.right, rect.bottom, title))
+                return True
+
+            user32.EnumWindows(cb, 0)
+            if not found:
+                return None
+            found.sort(key=lambda x: -x[0])
+            _s, left, top, right, bottom, title = found[0]
+            cx = (left + right) // 2
+            cy = (top + bottom) // 2
+            print(f"screen_vision: search window {title[:70]!r} center=({cx},{cy})", flush=True)
+            import mss
+            with mss.mss() as sct:
+                for i, mon in enumerate(sct.monitors[1:], start=1):
+                    if (mon["left"] <= cx < mon["left"] + mon["width"]
+                            and mon["top"] <= cy < mon["top"] + mon["height"]):
+                        return i
+            return 0
+        except Exception as e:
+            print(f"screen_vision: find browser: {e}", flush=True)
+            return None
 
     def capture(self, app: AppContext) -> Optional[Path]:
         try:
@@ -154,7 +265,11 @@ class PluginImpl(Plugin):
                 image = ImageGrab.grab(all_screens=(mon_idx <= 0))
             if image is None:
                 return None
-            max_side = int(app.get_plugin_setting(self.id, "max_side", 1600) or 1600)
+            max_side = int(
+                app.get_plugin_setting("screen", "max_side", None)
+                or app.get_plugin_setting(self.id, "max_side", 1600)
+                or 1600
+            )
             image.thumbnail((max_side, max_side))
             buf = io.BytesIO()
             image.convert("RGB").save(buf, format="JPEG", quality=86)

@@ -64,9 +64,6 @@ class PluginImpl(Plugin):
         app.state.setdefault("emotion_animation", "idle")
         app.state["avatar_plugin"] = self
         app.state["emotion_plugin"] = self
-        # чтобы старые вызовы app.plugins.get("avatar"|"emotion") находили нас
-        app.plugins["avatar"] = self
-        app.plugins["emotion"] = self
         print("🎭 persona 1.0: emotion+avatar", flush=True)
         if app.get_plugin_setting(self.id, "show_avatar", True):
             self._ensure_window()
@@ -143,7 +140,8 @@ class PluginImpl(Plugin):
                 name = ""
         if name and app.get_plugin_setting(self.id, "react_to_reply", True):
             self.apply_emotion(name)
-        return reply
+        cleaned = _ANIM_RE.sub("", reply or "")
+        return " ".join(cleaned.split())
 
     def apply_emotion(self, emotion: str) -> None:
         if self.app is None:

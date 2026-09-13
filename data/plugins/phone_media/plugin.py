@@ -9,6 +9,8 @@ import copy
 import json
 import mimetypes
 import random
+import re
+import asyncio
 import threading
 import time
 import urllib.request
@@ -128,10 +130,12 @@ class PluginImpl(Plugin):
             return None
         stage = str(app.state.get("imggen_stage") or "idle")
 
+        if stage == "drafting":
+            return HookResult(True, "ещё собираю промпт через модель, секунду…")
         if stage == "confirm":
             return self._handle_confirm(app, text, low)
         if stage == "busy":
-            if any(w in low for w in ("отмена", "стоп генерац", "не надо картин")):
+            if self._has_word(low, "отмена", "стоп") or "стоп генерац" in low or "не надо картин" in low:
                 app.state["imggen_stage"] = "idle"
                 return HookResult(True, "ок, не жду эту картинку. можно просить новую.")
             return None
@@ -140,20 +144,61 @@ class PluginImpl(Plugin):
             refs = self._refs(app)
             app.state["imggen_request"] = text
             app.state["imggen_refs"] = refs
-            app.state["imggen_stage"] = "confirm"
-            card = self._llm_prompts_then_card(app, text, refs)
-            return HookResult(True, card)
+            app.state["imggen_stage"] = "drafting"
+            self._schedule_card(app, text, refs)
+            return HookResult(True, "собираю промпты через модель — напиши, как появятся: «давай qwen» / sdxl / z.")
         return None
 
+    @staticmethod
+    def _has_word(text: str, *words: str) -> bool:
+        t = text or ""
+        for w in words:
+            if re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", t, flags=re.I):
+                return True
+        return False
+
+    def _schedule_card(self, app, text, refs):
+        async def run():
+            try:
+                card = await self._llm_prompts_then_card(app, text, refs)
+            except Exception as e:
+                print(f"imggen llm task: {e}", flush=True)
+                card = f"не собрала промпт: {e}"
+                app.state["imggen_stage"] = "idle"
+            else:
+                if app.state.get("imggen_stage") == "drafting":
+                    app.state["imggen_stage"] = "confirm"
+            self._notify(app, card, None)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(run())
+                return
+        except Exception:
+            pass
+
+        def work():
+            asyncio.run(run())
+
+        threading.Thread(target=work, name="imggen-llm", daemon=True).start()
+
     def _handle_confirm(self, app, text, low):
-        if any(w in low for w in ("нет", "не то", "другой промпт", "переделай промпт", "не подойд")):
-            if len(low) > 12 and not low.startswith("нет"):
+        if self._has_word(low, "нет") or self._has_word(low, "не то", "отмена"):
+            if len(low) > 12 and not self._has_word(low, "нет"):
                 refs = list(app.state.get("imggen_refs") or [])
-                return HookResult(True, self._llm_prompts_then_card(app, text, refs))
+                app.state["imggen_stage"] = "drafting"
+                self._schedule_card(app, text, refs)
+                return HookResult(True, "пересобираю промпт…")
             app.state["imggen_stage"] = "idle"
             return HookResult(True, "ок, без картинки. скажи заново, что нарисовать.")
+        if any(w in low for w in ("другой промпт", "переделай промпт", "не подойд")):
+            refs = list(app.state.get("imggen_refs") or [])
+            app.state["imggen_stage"] = "drafting"
+            self._schedule_card(app, text, refs)
+            return HookResult(True, "пересобираю промпт…")
         wf = self._pick_workflow_name(low)
-        yes = any(w in low for w in ("да", "давай", "ок", "го", "пойдёт", "пойдет", "норм", "утвержд"))
+        yes = self._has_word(low, "да", "давай", "ок", "го", "пойдёт", "пойдет", "норм", "утвержд", "сгенерируй")
         if wf or yes:
             if not wf:
                 wf = str(app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
@@ -184,7 +229,9 @@ class PluginImpl(Plugin):
         # treat as prompt edit via LLM
         refs = list(app.state.get("imggen_refs") or [])
         req = str(app.state.get("imggen_request") or "") + " | правка: " + text
-        return HookResult(True, "обновила через LLM.\n" + self._llm_prompts_then_card(app, req, refs))
+        app.state["imggen_stage"] = "drafting"
+        self._schedule_card(app, req, refs)
+        return HookResult(True, "обновляю промпт через модель…")
 
     def _ask_card(self, app, prompt: str, refs: List[str]) -> str:
         if app.state.get("imggen_prompt_qwen"):
@@ -272,71 +319,20 @@ class PluginImpl(Plugin):
             look = ""
         return name or "персонаж", look or self._look_qwen()
 
-    def _llm_complete(self, app, system: str, user: str) -> str:
+    async def _llm_complete(self, app, system: str, user: str) -> str:
         msgs = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        # разные ядра ассистента
-        for attr in ("llm", "client", "chat_engine"):
-            obj = getattr(app, attr, None)
-            if obj is None:
-                obj = (app.state or {}).get(attr)
-            if obj is None:
-                continue
-            for meth in ("complete", "chat", "ask", "generate"):
-                fn = getattr(obj, meth, None)
-                if not callable(fn):
-                    continue
-                try:
-                    out = fn(msgs)
-                except TypeError:
-                    try:
-                        out = fn(system=system, user=user)
-                    except TypeError:
-                        try:
-                            out = fn(user)
-                        except Exception:
-                            continue
-                except Exception as e:
-                    print(f"imggen llm {attr}.{meth}: {e}", flush=True)
-                    continue
-                if isinstance(out, dict):
-                    out = out.get("content") or out.get("text") or ""
+        llm = getattr(app, "llm", None)
+        if llm is not None and hasattr(llm, "chat_once"):
+            try:
+                out = await llm.chat_once(msgs, temperature=0.35, max_tokens=800)
                 if out:
                     return str(out)
-        # openai-совместимый локальный
-        try:
-            base = str(app.state.get("llm_url") or "http://127.0.0.1:1234/v1").rstrip("/")
-            if base.endswith("/chat/completions"):
-                chat_url = base
-                root = base.rsplit("/chat/completions", 1)[0]
-            else:
-                root = base
-                chat_url = root + "/chat/completions"
-            model = str(app.state.get("llm_model") or "")
-            if not model:
-                try:
-                    rawm = json.loads(self._get(root + "/models", timeout=10).decode("utf-8"))
-                    data = rawm.get("data") or rawm.get("models") or []
-                    if data:
-                        model = str(data[0].get("id") or data[0].get("name") or "")
-                except Exception as e:
-                    print(f"imggen llm models: {e}", flush=True)
-            payload = {
-                "model": model or "local-model",
-                "messages": msgs,
-                "temperature": 0.35,
-                "max_tokens": 800,
-                "stream": False,
-            }
-            print(f"imggen llm POST {chat_url} model={model!r}", flush=True)
-            raw = self._post(chat_url, payload, timeout=120)
-            ch = (raw.get("choices") or [{}])[0]
-            return str((ch.get("message") or {}).get("content") or "")
-        except Exception as e:
-            print(f"imggen llm http: {e}", flush=True)
-            return ""
+            except Exception as e:
+                print(f"imggen llm.chat_once: {e}", flush=True)
+        return ""
 
     def _parse_prompt_json(self, raw: str) -> dict:
         s = (raw or "").strip()
@@ -355,7 +351,7 @@ class PluginImpl(Plugin):
             pass
         return {}
 
-    def _llm_prompts_then_card(self, app, request: str, refs: list) -> str:
+    async def _llm_prompts_then_card(self, app, request: str, refs: list) -> str:
         name, look = self._char_look(app)
         nsfw = False
         try:
@@ -382,7 +378,7 @@ class PluginImpl(Plugin):
             f"Запрос пользователя: {request}\n"
             "Собери три разных промпта под модели."
         )
-        raw = self._llm_complete(app, system, user)
+        raw = await self._llm_complete(app, system, user)
         data = self._parse_prompt_json(raw)
         print(f"imggen llm prompts keys={list(data.keys())} raw={raw[:180]!r}", flush=True)
         if not data.get("qwen"):

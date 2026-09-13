@@ -246,7 +246,7 @@ class PluginImpl(Plugin):
 
     @staticmethod
     def _apply_emotion(app: AppContext, emotion: str) -> None:
-        plugin = app.plugins.get("emotion") or app.state.get("emotion_plugin")
+        plugin = app.plugins.get("persona") or app.state.get("emotion_plugin") or app.plugins.get("emotion")
         if plugin is not None and hasattr(plugin, "set_context"):
             try:
                 plugin.set_context(app, emotion, "auto_message")

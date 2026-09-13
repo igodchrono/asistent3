@@ -175,7 +175,7 @@ class PluginImpl(Plugin):
             app.state["companion_mood_energy"] = float(energy)
         app.state["companion_mood_at"] = time.time()
         # связать с emotion-плагином
-        pl = app.plugins.get("emotion")
+        pl = app.plugins.get("persona") or app.state.get("emotion_plugin") or app.plugins.get("emotion")
         if pl and hasattr(pl, "set_context"):
             try:
                 anim = {

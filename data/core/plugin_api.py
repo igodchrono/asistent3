@@ -70,6 +70,16 @@ class AppContext:
         self.state: Dict[str, Any] = {}
         self.window = None
 
+    def iter_plugins(self):
+        """Уникальные инстансы (без тройного persona через чужие id)."""
+        seen = set()
+        for pl in list(self.plugins.values()):
+            i = id(pl)
+            if i in seen:
+                continue
+            seen.add(i)
+            yield pl
+
     def is_plugin_enabled(self, plugin_id: str) -> bool:
         if not getattr(self.config, "PLUGINS_ENABLED", True):
             return False
@@ -116,7 +126,7 @@ class AppContext:
             return
         setattr(self.config, "ACTIVE_CHARACTER", character_id)
         # уведомить плагины
-        for pl in list(self.plugins.values()):
+        for pl in list(self.iter_plugins()):
             try:
                 pl.on_character_changed(character_id, prev, self)
             except Exception as e:

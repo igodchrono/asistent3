@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,12 @@ except Exception:
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".yml"}
+_ANIM_RE = re.compile(r"\[ANIM:[a-zA-Z0-9_]+\]", re.I)
+
+
+def _strip_anim(text: str) -> str:
+    t = _ANIM_RE.sub("", text or "")
+    return " ".join(t.split())
 
 
 def attachments_root() -> Path:
@@ -255,6 +262,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         color = "#f0c27a" if who == "Вы" else "#9ad7a0"
         if who == "Ошибка":
             color = "#f66"
+        text = _strip_anim(text) if who != "Вы" else (text or "")
         body = self._html_text(text)
         extra = ""
         for p in files or []:

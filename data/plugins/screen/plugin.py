@@ -37,8 +37,7 @@ class PluginImpl(Plugin):
 
     def on_load(self, app: AppContext) -> None:
         self.app = app
-        app.plugins["screen_vision"] = self
-        app.plugins["screen_react"] = self
+        app.state["screen_plugin"] = self
         print("👁 screen 1.0: vision+react", flush=True)
         # wrap original vision tools if folder still exists
         try:
@@ -75,7 +74,7 @@ class PluginImpl(Plugin):
     def tool_describe_screen(self, app: AppContext, **kwargs) -> str:
         if self._vision and hasattr(self._vision, "tool_describe_screen"):
             return self._vision.tool_describe_screen(app, **kwargs)
-        return "screen: vision-модуль не загружен (нужен plugins/screen_vision)"
+        return "screen: vision-модуль не загружен"
 
     def capture(self, app: AppContext):
         if self._vision and hasattr(self._vision, "capture"):
@@ -97,7 +96,11 @@ class PluginImpl(Plugin):
             return
         app.state["screen_react_emotion"] = emo
         print(f"screen: {emo}/{anim} conf={conf:.2f} ← {title[:70]!r}", flush=True)
-        persona = app.plugins.get("persona") or app.plugins.get("emotion")
+        persona = (
+            app.plugins.get("persona")
+            or app.state.get("emotion_plugin")
+            or app.plugins.get("emotion")
+        )
         if persona and hasattr(persona, "set_context"):
             try:
                 persona.set_context(app, emo, "screen")
@@ -128,16 +131,13 @@ class PluginImpl(Plugin):
             bits.append(f"активное окно: {title}")
         if desc:
             bits.append(f"снимок: {desc[:200]}")
-        if not bits or not messages:
-            return messages
-        block = "\n\n[ЭКРАН] " + " | ".join(bits) + "\n"
-        if messages[0].get("role") == "system":
-            messages[0]["content"] = str(messages[0].get("content") or "") + block
+        if bits and messages and messages[0].get("role") == "system":
+            messages[0]["content"] = str(messages[0].get("content") or "") + "\n\n[ЭКРАН] " + " | ".join(bits) + "\n"
         if self._vision and hasattr(self._vision, "on_before_llm"):
             try:
                 messages = self._vision.on_before_llm(messages, app)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"screen: on_before_llm {e}", flush=True)
         return messages
 
     def on_after_llm(self, reply: str, app: AppContext) -> str:
