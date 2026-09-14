@@ -119,77 +119,18 @@ class PluginImpl(Plugin):
     def on_user_message(self, text: str, app: AppContext) -> Optional[HookResult]:
         pending = getattr(self, "_pending", None)
         low = (text or "").strip().lower()
-        if pending:
-            if low in ("да", "yes", "ок", "окей", "подтверждаю"):
-                self._pending = None
-                try:
-                    reply = self._execute_pending(app, pending)
-                except Exception as e:
-                    reply = f"Не удалось: {e}"
-                return HookResult(True, reply)
-            if low in ("нет", "no", "отмена", "не надо"):
-                self._pending = None
-                return HookResult(True, "Отменено.")
-        # мост для selftest / простых команд (основной путь — intent)
-        if "открой найденное" in low or "открыть найденное" in low:
-            if app.state.get("last_search_query") or app.state.get("last_search_url"):
-                return None  # это выдача браузера, не файл с диска
-            return HookResult(True, self.tool_open_found(app))
-        if low.startswith("открой ") or low.startswith("открыть "):
-            target = text.split(" ", 1)[-1].strip()
-            # местоимения / контекст картинки — не файл на диске
-            tlow = target.lower().strip(" .!?,…")
-            pronouns = {
-                "ее", "её", "его", "их", "это", "эту", "этот", "ту", "то",
-                "эту картинку", "эту ссылку", "картинку", "ссылку",
-                "ее в другой вкладке", "её в другой вкладке",
-                "в другой вкладке", "в новой вкладке",
-            }
-            if tlow in pronouns or tlow.startswith("ее ") or tlow.startswith("её "):
-                return None  # пусть browser / intent обработает
-            return HookResult(True, self.tool_open(app, target=target))
-        if low.startswith("закрой ") or low.startswith("закрыть "):
-            tgt = text.split(" ", 1)[-1]
-            if "последн" in low:
-                return HookResult(True, self.tool_close_last(app))
-            if "открытые папки" in low or "окна проводника" in low:
-                return HookResult(True, "Используй: закрой последнее открытое (не все папки).")
-            return HookResult(True, self.tool_close(app, target=tgt))
-        if low in ("громче",):
-            return HookResult(True, self.tool_volume(app, direction="up"))
-        if low in ("тише",):
-            return HookResult(True, self.tool_volume(app, direction="down"))
-        if "найди папк" in low:
-            import re as _re
-            m = _re.search(r"папк[уи]\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
-            q = m.group(1).strip() if m else low.split()[-1]
-            disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
-            return HookResult(True, self.tool_search_folders(app, query=q, disk=disk))
-        if low.startswith("найди файл") or "найди файл" in low:
-            import re as _re
-            m = _re.search(r"файл\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
-            q = m.group(1).strip() if m else "*"
-            disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
-            return HookResult(True, self.tool_search_files(app, query=q, disk=disk))
-        if "открой найденное" in low:
-            return HookResult(True, self.tool_open_found(app))
-        if "создай текстовый файл" in low or low.startswith("создай файл"):
-            name = text.split("файл", 1)[-1].strip()
-            return HookResult(True, self.tool_create_text(app, name=name))
-        if "в корзину" in low or "в корзину" in text.lower():
-            import re as _re
-            m = _re.search(
-                r"(?:удали|удалить|перемести|помести)\s+(?:файл\s+)?(.+?)\s+в\s+корзину",
-                text,
-                flags=_re.I,
-            )
-            name = m.group(1).strip().strip('"') if m else ""
-            if not name:
-                m2 = _re.search(r"([\w.-]+\.\w{1,5})", text)
-                name = m2.group(1) if m2 else ""
-            return HookResult(True, self.tool_recycle(app, name=name))
-        if "очисти корзину" in low or "очистить корзину" in low:
-            return HookResult(True, self.tool_empty_recycle(app))
+        if not pending:
+            return None
+        if low in ("да", "yes", "ок", "окей", "подтверждаю"):
+            self._pending = None
+            try:
+                reply = self._execute_pending(app, pending)
+            except Exception as e:
+                reply = f"Не удалось: {e}"
+            return HookResult(True, reply)
+        if low in ("нет", "no", "отмена", "не надо"):
+            self._pending = None
+            return HookResult(True, "Отменено.")
         return None
 
     def _focus_window_by_title(self, title_part: str, wait: float = 0.8) -> None:

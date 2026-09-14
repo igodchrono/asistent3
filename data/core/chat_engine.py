@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .llm_client import LLMClient
 from .plugin_api import AppContext, HookResult
+
+# один поток: tools не блокируют GUI, state не гоняется параллельно
+_TOOL_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool")
 
 
 INTENT_SCHEMA = """Ты классификатор намерений. Ответь ТОЛЬКО одним JSON без markdown:
@@ -109,6 +113,15 @@ class ChatEngine:
         if fast:
             print(f"intent fast: {fast}", flush=True)
             return fast
+        try:
+            from .intents import classify as rule_classify
+            ruled = rule_classify(text, self._ctx())
+        except Exception as e:
+            print(f"intent rules failed: {e}", flush=True)
+            ruled = None
+        if ruled is not None:
+            print(f"intent rules: {ruled.get('intent')} args={ruled.get('args')}", flush=True)
+            return ruled
         ctx = self._context_block()
         messages = [
             {"role": "system", "content": INTENT_SCHEMA + "\n\n" + ctx},
@@ -121,7 +134,9 @@ class ChatEngine:
         except Exception as e:
             print(f"intent: classify failed: {e}", flush=True)
             return {"intent": "chat", "args": {}, "speak": ""}
-        return self._parse_intent(raw)
+        parsed = self._parse_intent(raw)
+        print(f"intent llm: {parsed.get('intent')} args={parsed.get('args')}", flush=True)
+        return parsed
 
     def _fast_after_search(self, low: str) -> Optional[Dict[str, Any]]:
         """После поиска не ходить в LLM и не открывать Google заново."""
@@ -238,6 +253,11 @@ class ChatEngine:
         except Exception as e:
             return f"Ошибка {name}: {e}"
 
+    async def _run_tool_async(self, intent: str, args: Dict[str, Any]) -> Optional[str]:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_TOOL_POOL, self._run_tool, intent, args)
+
     async def _refine_search_args(self, user_text: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Вытащить нормальный поисковый запрос из фразы пользователя."""
         args = dict(args or {})
@@ -351,8 +371,14 @@ class ChatEngine:
             w in _low
             for w in ("открой", "открыть", "скачай", "сохрани", "в чат", "пришли", "эту картин", "лучш")
         )
-        if has_hits and want_media and intent in (
-            "pc_open_found", "pc_open", "open_last_search", "chat", "web_search"
+        tgt = str(args.get("target") or "").lower().strip(" .!?,…")
+        pronounish = tgt in (
+            "", "ее", "её", "его", "их", "это", "эту", "этот", "ту", "то",
+            "найденное", "ссылку", "картинку", "ее в другой вкладке",
+        )
+        if has_hits and want_media and (
+            intent in ("pc_open_found", "open_last_search", "chat", "web_search")
+            or (intent == "pc_open" and pronounish)
         ):
             mode = str(self.app.state.get("last_search_mode") or "web")
             if mode == "images" or "картин" in _low or "фото" in _low or "скач" in _low:
@@ -375,13 +401,13 @@ class ChatEngine:
 
         # describe_screen: снимок + обычный LLM с vision-вложением
         if intent == "describe_screen":
-            self._run_tool("describe_screen", args)
+            await self._run_tool_async("describe_screen", args)
             self.app.state["screen_vision_attach"] = True
             self.app.state["screen_vision_just_captured"] = True
             intent = "chat"
 
         if intent != "chat":
-            result = self._run_tool(intent, args)
+            result = await self._run_tool_async(intent, args)
             if result is not None:
                 reply = (speak + "\n" + result).strip() if speak else result
                 for pl in plugs:

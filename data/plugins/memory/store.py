@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Долговременная память одного персонажа (SQLite, без авто-очистки)."""
+"""Единственное хранилище памяти персонажа: memory/memory.db
+
+Старые файлы (persistent.db, persistent_memory.db, chat.db) не используются
+и не создаются. Если лежат рядом — игнорируются.
+"""
 from __future__ import annotations
 
 import re

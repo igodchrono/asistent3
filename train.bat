@@ -1,12 +1,7 @@
 @echo off
 chcp 65001 >nul
-setlocal
-cd /d "%~dp0data"
-set "PY=%~dp0python\python.exe"
-if not exist "%PY%" (
-  where python >nul 2>&1 && set "PY=python"
-)
-echo Training micro-models...
-"%PY%" train_model.py %*
+echo Модели и чекпоинты в репозиторий не входят.
+echo Intent — правила: data\core\intents.py
+echo Голос: скачайте Vosk, см. data\models\README.md
+echo.
 pause
-endlocal

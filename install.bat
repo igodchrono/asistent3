@@ -77,7 +77,7 @@ if errorlevel 1 (
 :CHECK
 echo.
 echo [5/5] import check
-"%PY%" -c "import PyQt5, aiohttp, PIL, numpy; print('core ok')"
+"%PY%" -c "import PyQt5, aiohttp, PIL; print('core ok')"
 if exist "%DATA%\check_install.py" (
   "%PY%" "%DATA%\check_install.py"
 )

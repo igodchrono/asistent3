@@ -187,26 +187,6 @@ class AppContext:
                 except Exception:
                     pass
 
-            # перезагрузить persistent memory и RAG, если они зарегистрированы в контексте
-            # возможные места хранения: атрибуты объекта или self.state
-            pm = getattr(self, 'persistent_memory', None) or self.state.get('persistent_memory')
-            if pm is not None:
-                for name in ('reload', 'reindex', 'rebuild', 'refresh', 'close', 'open'):
-                    fn = getattr(pm, name, None)
-                    if callable(fn):
-                        try:
-                            res = fn()
-                            # если функция асинхронная — запустить
-                            import asyncio
-                            if hasattr(res, '__await__'):
-                                loop = asyncio.get_event_loop()
-                                if loop.is_running():
-                                    asyncio.ensure_future(res)
-                                else:
-                                    loop.run_until_complete(res)
-                        except Exception:
-                            pass
-
             # RAG: если есть, вызвать асинхронно prune + auto_index
             rag = getattr(self, 'rag', None) or self.state.get('rag')
             if rag is not None:

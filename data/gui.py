@@ -282,6 +282,36 @@ class ChatWindow(QtWidgets.QMainWindow):
         if text:
             self._append("Ассистент", text)
 
+    def _begin_assistant_stream(self) -> None:
+        self._stream_raw = ""
+        self.chat.moveCursor(QtGui.QTextCursor.End)
+        self._append_html(
+            '<div style="margin:8px 0 12px 0;"><b style="color:#9ad7a0;">Ассистент</b><br>'
+        )
+
+    def _feed_assistant_stream(self, chunk: str) -> None:
+        if not chunk:
+            return
+        self._stream_raw = getattr(self, "_stream_raw", "") + chunk
+        self.chat.moveCursor(QtGui.QTextCursor.End)
+        self.chat.insertHtml(self._html_text(chunk))
+        self.chat.moveCursor(QtGui.QTextCursor.End)
+        bar = self.chat.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _finish_assistant_stream(self) -> None:
+        raw = getattr(self, "_stream_raw", "") or ""
+        extra = ""
+        for m in re.findall(r"\[фото:\s*([^\]]+)\]", raw):
+            fp = Path(m.strip())
+            if fp.exists():
+                extra += self._html_file(fp)
+        self.chat.moveCursor(QtGui.QTextCursor.End)
+        if extra:
+            self.chat.insertHtml(extra)
+        self.chat.insertHtml("</div>")
+        self.chat.moveCursor(QtGui.QTextCursor.End)
+
     def submit_text(self, text: str) -> None:
         text = (text or "").strip()
         if text and not self._busy:
@@ -358,14 +388,26 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.send_btn.setEnabled(False)
         self._busy = True
         self.set_status("thinking", "думаю…")
-        buf = []
+        streaming = False
+        buf: list[str] = []
         try:
             async for chunk in self.engine.handle_user(send_text):
+                if not chunk:
+                    continue
+                if not streaming:
+                    self._begin_assistant_stream()
+                    streaming = True
+                    self.set_status("thinking", "пишу…")
                 buf.append(chunk)
-            reply = "".join(buf).strip() or "(пустой ответ)"
-            self._append("Ассистент", reply)
+                self._feed_assistant_stream(chunk)
+            if streaming:
+                self._finish_assistant_stream()
+            else:
+                self._append("Ассистент", "(пустой ответ)")
             self.set_status("idle", "готово")
         except Exception as e:
+            if streaming:
+                self._finish_assistant_stream()
             self._append("Ошибка", str(e))
             self.set_status("error", "ошибка")
         finally:

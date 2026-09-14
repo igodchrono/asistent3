@@ -233,10 +233,30 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         body = raw.split(":", 1)[-1].strip() if ":" in raw else (raw.split(" ", 1)[-1] if " " in raw else raw)
         return {"intent": "note_add", "args": {"text": body}, "speak": ""}
 
+    if low.startswith("открой ") or low.startswith("открыть "):
+        tgt = low.split(" ", 1)[-1].strip(" .!?")
+        if tgt in ("блокнот", "калькулятор", "notepad", "calc", "calculator"):
+            return {"intent": "pc_open", "args": {"target": tgt}, "speak": ""}
+        if tgt in ("chrome", "firefox", "проводник", "explorer"):
+            return {"intent": "pc_open", "args": {"target": tgt}, "speak": ""}
+
+    if low.startswith("закрой ") or low.startswith("закрыть "):
+        tgt = low.split(" ", 1)[-1].strip(" .!?")
+        if "последн" in tgt:
+            return {"intent": "pc_close_last", "args": {}, "speak": ""}
+        if tgt:
+            return {"intent": "pc_close", "args": {"target": tgt}, "speak": ""}
+
     if low in ("громче", "сделай громче"):
         return {"intent": "pc_volume", "args": {"direction": "up"}, "speak": ""}
     if low in ("тише", "сделай тише"):
         return {"intent": "pc_volume", "args": {"direction": "down"}, "speak": ""}
+
+    if "очисти корзину" in low or "очистить корзину" in low:
+        return {"intent": "pc_empty_recycle", "args": {}, "speak": ""}
+    if "создай текстовый файл" in low or low.startswith("создай файл"):
+        name = raw.split("файл", 1)[-1].strip() if "файл" in low else "note.txt"
+        return {"intent": "pc_create_text", "args": {"name": name}, "speak": ""}
 
     if any(w in low for w in ("подробно", "максимально точно", "разбери подробно")) and len(low) > 12:
         return {"intent": "deep_think", "args": {}, "speak": ""}
@@ -281,6 +301,8 @@ if __name__ == "__main__":
         ("напомни через час про чай", "reminder_add", {}),
         ("запиши: купить молоко", "note_add", {}),
         ("громче", "pc_volume", {}),
+        ("открой блокнот", "pc_open", {}),
+        ("закрой калькулятор", "pc_close", {}),
         ("мне скучно", None, {}),
         ("найди что-то интересное", "web_search", {}),
     ]

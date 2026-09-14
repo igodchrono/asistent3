@@ -5,4 +5,4 @@ aiohttp>=3.8
 Pillow>=10.0
 mss>=9.0
 
-# Голос — отдельно: pip install -r REQUIREMENTS_VOICE.txt
+# Голос — отдельно: pip install -r data/REQUIREMENTS_VOICE.txt
