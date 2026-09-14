@@ -53,7 +53,7 @@ def apply_to_config(config_module=None) -> Dict[str, Any]:
     data = load_settings()
     applied = {}
     for k, v in data.items():
-        if k in ALLOWED_KEYS or k.startswith(ALLOWED_PREFIXES) or k.isupper():
+        if k in ALLOWED_KEYS or k.startswith(ALLOWED_PREFIXES):
             setattr(config_module, k, v)
             applied[k] = v
     return applied

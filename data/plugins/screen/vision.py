@@ -88,14 +88,15 @@ class PluginImpl(Plugin):
         self._ui: Dict[str, Any] = {}
         self.app = None
 
+    def _sid(self) -> str:
+        return "screen"
+
     def register_tools(self, app: AppContext) -> None:
         app.tools["describe_screen"] = self.tool_describe_screen
 
     def tool_describe_screen(self, app: AppContext, **kwargs) -> str:
-        if not app.get_plugin_setting(self.id, "enabled", True):
-            # plugin id in settings is "screen" when loaded via wrapper
-            if not app.get_plugin_setting("screen", "enabled", True):
-                return "Видение экрана выключено."
+        if not app.get_plugin_setting(self._sid(), "enabled", True):
+            return "Видение экрана выключено."
         mon = kwargs.get("monitor")
         if mon is not None:
             try:
@@ -267,7 +268,7 @@ class PluginImpl(Plugin):
                 return None
             max_side = int(
                 app.get_plugin_setting("screen", "max_side", None)
-                or app.get_plugin_setting(self.id, "max_side", 1600)
+                or app.get_plugin_setting(self._sid(), "max_side", 1600)
                 or 1600
             )
             image.thumbnail((max_side, max_side))
@@ -305,7 +306,7 @@ class PluginImpl(Plugin):
         values = {}
         try:
             from plugin_catalog import plugin_settings_block
-            values = plugin_settings_block(self.id) or {}
+            values = plugin_settings_block(self._sid()) or {}
         except Exception:
             pass
 
@@ -315,12 +316,22 @@ class PluginImpl(Plugin):
         self._ui["enabled"] = en
         layout.addWidget(en)
 
+        react = QtWidgets.QCheckBox("Реакция на активное окно")
+        react.setChecked(bool(values.get("react", True)))
+        self._ui["react"] = react
+        layout.addWidget(react)
+
         form = QtWidgets.QFormLayout()
         spin = QtWidgets.QSpinBox()
         spin.setRange(640, 3840)
         spin.setValue(int(values.get("max_side", 1600) or 1600))
         self._ui["max_side"] = spin
         form.addRow("Макс. сторона снимка (px)", spin)
+        iv = QtWidgets.QSpinBox()
+        iv.setRange(2, 30)
+        iv.setValue(int(values.get("interval_sec", 4) or 4))
+        self._ui["interval_sec"] = iv
+        form.addRow("Интервал опроса (сек)", iv)
         layout.addLayout(form)
 
         layout.addWidget(QtWidgets.QLabel("<b>Монитор для снимков и «что на экране»</b>"))
@@ -398,12 +409,12 @@ class PluginImpl(Plugin):
             idx = combo.currentData()
             try:
                 from plugin_catalog import set_plugin_setting
-                set_plugin_setting(self.id, "monitor", int(idx))
+                set_plugin_setting(self._sid(), "monitor", int(idx))
             except Exception:
                 # fallback app state
                 if not hasattr(app.config, "PLUGIN_SETTINGS"):
                     app.config.PLUGIN_SETTINGS = {}
-                app.config.PLUGIN_SETTINGS.setdefault(self.id, {})["monitor"] = int(idx)
+                app.config.PLUGIN_SETTINGS.setdefault(self._sid(), {})["monitor"] = int(idx)
             path = self.capture(app)
             if not path:
                 preview.setText("Не удалось снять экран")
@@ -428,8 +439,12 @@ class PluginImpl(Plugin):
         out: Dict[str, Any] = {}
         if "enabled" in self._ui:
             out["enabled"] = self._ui["enabled"].isChecked()
+        if "react" in self._ui:
+            out["react"] = self._ui["react"].isChecked()
         if "max_side" in self._ui:
             out["max_side"] = self._ui["max_side"].value()
+        if "interval_sec" in self._ui:
+            out["interval_sec"] = self._ui["interval_sec"].value()
         combo = self._ui.get("monitor_combo")
         if combo is not None:
             try:

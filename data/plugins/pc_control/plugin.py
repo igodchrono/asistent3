@@ -117,6 +117,8 @@ class PluginImpl(Plugin):
         app.tools["pc_empty_recycle"] = self.tool_empty_recycle
 
     def on_user_message(self, text: str, app: AppContext) -> Optional[HookResult]:
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return None
         pending = getattr(self, "_pending", None)
         low = (text or "").strip().lower()
         if not pending:

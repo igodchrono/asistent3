@@ -397,7 +397,12 @@ class ChatEngine:
             chk = check_user_text(text, self.app)
         except Exception as e:
             print(f"policy check: {e}", flush=True)
-            chk = {"blocked": False}
+            chk = {
+                "blocked": True,
+                "level": "always",
+                "hit": "policy_error",
+                "refusal": "Сейчас не могу это обработать.",
+            }
         if chk.get("blocked"):
             reply = str(chk.get("refusal") or "Нет.").strip()
             # always-block: не кладём запрос в память
@@ -620,6 +625,11 @@ class ChatEngine:
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
+        try:
+            from core.policy import build_policy_prompt
+            system += "\n\n" + build_policy_prompt(self.app)
+        except Exception:
+            pass
         system += "\nОдно короткое сообщение от себя. Без канцелярита, без «как ИИ»."
         try:
             raw = await self.llm.chat_once(
@@ -633,4 +643,12 @@ class ChatEngine:
         except Exception as e:
             print(f"proactive: {e}", flush=True)
             return ""
-        return self._strip_anim_for_chat(raw or "")
+        text = self._strip_anim_for_chat(raw or "")
+        try:
+            from core.policy import check_assistant_text
+            leak = check_assistant_text(text, self.app)
+            if leak.get("blocked"):
+                return ""
+        except Exception:
+            pass
+        return text
