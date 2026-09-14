@@ -39,10 +39,10 @@ class PluginImpl(Plugin):
 
     def on_user_message(self, text, app):
         low = (text or "").strip().lower()
-        if low.startswith("запиши:") or low.startswith("запиши "):
+        if low.startswith("запиши:") or low.startswith("заметка:") or low.startswith("запиши заметк"):
             body = text.split(":", 1)[-1].strip() if ":" in text else text.split(" ", 1)[-1]
             return HookResult(True, self.tool_add(app, text=body))
-        if "покажи заметки" in low or low == "заметки":
+        if low in ("покажи заметки", "заметки", "покажи заметки."):
             return HookResult(True, self.tool_list(app))
         if low.startswith("найди в заметках"):
             q = text.split(" ", 3)[-1] if " " in text else ""

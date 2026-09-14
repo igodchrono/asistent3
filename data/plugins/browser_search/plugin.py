@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request
 from urllib.error import HTTPError, URLError
 
-from core.plugin_api import AppContext, HookResult, Plugin, SettingField
+from core.plugin_api import AppContext, Plugin, SettingField
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -90,59 +90,8 @@ class PluginImpl(Plugin):
         app.tools["fetch_url"] = self.tool_fetch_url
 
     def on_user_message(self, text, app):
-        if not app.get_plugin_setting(self.id, "enabled", True):
-            return None
-        if hasattr(app, "is_plugin_enabled") and not app.is_plugin_enabled(self.id):
-            return None
-        low = (text or "").strip().lower()
-        if not low:
-            return None
-
-        if any(x in low for x in ("файл", "папк", "на диск", "на диске", "в проводнике")):
-            return None
-
-        # прямая ссылка
-        murl = _URL_RE.search(text or "")
-        if murl and any(w in low for w in ("скач", "сохрани", "открой ссыл", "текст со", "выдай", "в чат")):
-            return HookResult(True, self.tool_fetch_url(app, url=murl.group(0)))
-
-        idx = self._index_from_text(low)
-
-        want_save = any(
-            w in low
-            for w in (
-                "скачай", "скачать", "сохрани в чат", "в чат", "пришли картин",
-                "выдай картин", "пришли фото", "скинь картин", "скачай картин",
-                "сохрани картин", "эту картин", "лучш",
-            )
-        )
-        want_open = low.startswith("открой") or low.startswith("открыть")
-        pick_words = ("ее", "её", "эту", "этот", "картин", "ссылк", "вкладк", "лучш", "перв")
-        has_search = bool(
-            app.state.get("last_search_results")
-            or app.state.get("last_search_query")
-            or app.state.get("last_search_url")
-        )
-
-        if (want_save or (want_open and any(w in low for w in pick_words))) and has_search:
-            mode = str(app.state.get("last_search_mode") or "web")
-            if "вкладк" in low and "чат" not in low:
-                return HookResult(True, self.tool_open_last(app, text=text, browser_only=True))
-            if mode == "images" or want_save or "картин" in low or "фото" in low:
-                return HookResult(True, self.tool_download_image(app, index=idx, text=text))
-            return HookResult(True, self.tool_fetch_page(app, index=idx, text=text))
-
-        explicit = (
-            "найди в интернете", "поищи в интернете", "поищи в сети",
-            "погугли", "загугли", "в гугле",
-            "найди картинки", "найди картинку", "найди фото", "поиск картинок",
-            "найди на youtube", "найди видео",
-        )
-        if not any(t in low for t in explicit):
-            return None
-        mode = self._guess_mode(text)
-        q = self._normalize_query(text)
-        return HookResult(True, self.tool_web_search(app, query=q or text, mode=mode))
+        # фразы разбирает intents.py, инструменты идут в worker
+        return None
 
     def tool_web_search(
         self, app: AppContext, query: str = "", mode: str = "web", **kwargs

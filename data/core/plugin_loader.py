@@ -43,6 +43,9 @@ class PluginLoader:
                     break
         if cls is None:
             raise RuntimeError(f"No PluginImpl in plugins.{plugin_id}.plugin")
+        if getattr(cls, "hidden", False):
+            print(f"🔌 skip (hidden): {plugin_id}", flush=True)
+            return None
         inst = cls()
         inst.id = getattr(inst, "id", None) or plugin_id
         inst.on_load(self.app)

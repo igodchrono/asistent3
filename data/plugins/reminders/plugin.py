@@ -14,7 +14,7 @@ from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 class PluginImpl(Plugin):
     id = "reminders"
     name = "Напоминания"
-    version = "2.2.0"
+    version = "2.3.0"
     settings_tab = "own"
     settings_tab_title = "Напоминания"
     settings_schema = [SettingField("enabled", "Включить", "bool", True)]
@@ -22,12 +22,34 @@ class PluginImpl(Plugin):
     def __init__(self) -> None:
         self._ui: Dict[str, Any] = {}
         self.app = None
+        self._timer = None
+        self._fired: set = set()
+
+    def on_load(self, app: AppContext) -> None:
+        self.app = app
+        self._db(app)
+        try:
+            from PyQt5 import QtCore
+            self._timer = QtCore.QTimer()
+            self._timer.timeout.connect(lambda: self._tick(app))
+            self._timer.start(30 * 1000)
+        except Exception as e:
+            print(f"reminders: timer {e}", flush=True)
+        print("⏰ reminders: due-check 30s", flush=True)
+
+    def on_shutdown(self, app: AppContext) -> None:
+        if self._timer is not None:
+            try:
+                self._timer.stop()
+            except Exception:
+                pass
+            self._timer = None
 
     def on_user_message(self, text, app):
         low = (text or "").strip().lower()
         if low.startswith("напомни"):
             return HookResult(True, self.tool_add(app, text=text))
-        if "напоминания" in low or "список напоминаний" in low:
+        if low in ("напоминания", "список напоминаний", "покажи напоминания"):
             return HookResult(True, self.tool_list(app))
         return None
 
@@ -61,12 +83,11 @@ class PluginImpl(Plugin):
 
     def tool_add(self, app: AppContext, text: str = "", **kw) -> str:
         text = (text or kw.get("query") or "").strip() or "напоминание"
-        # убрать слово напомни
         import re
         text = re.sub(r"^\s*напомни(ть)?\s*", "", text, flags=re.I).strip() or text
-        due_dt = datetime.now() + timedelta(hours=1)
-        due = due_dt.isoformat(timespec="minutes")
+        due_dt, label = self._parse_when(text)
         now = time.time()
+        due = due_dt.isoformat(timespec="minutes")
         trigger = due_dt.timestamp()
         p = self._db(app)
         con = sqlite3.connect(str(p))
@@ -81,7 +102,75 @@ class PluginImpl(Plugin):
             return f"Не удалось создать напоминание: {e}"
         con.close()
         self._refresh_ui(app)
-        return f"Напоминание создано на ~1ч: {text}"
+        return f"Напоминание на {label}: {text}"
+
+    @staticmethod
+    def _parse_when(text: str):
+        """через 10 минут / 2 часа / завтра / в 18:00; иначе +1 час."""
+        import re
+        now = datetime.now()
+        t = (text or "").lower()
+        m = re.search(r"через\s+(\d+)\s*(минут|мин)\b", t)
+        if m:
+            n = int(m.group(1))
+            dt = now + timedelta(minutes=max(1, n))
+            return dt, dt.strftime("%H:%M")
+        m = re.search(r"через\s+(\d+)\s*(час|часа|часов)\b", t)
+        if m:
+            n = int(m.group(1))
+            dt = now + timedelta(hours=max(1, n))
+            return dt, dt.strftime("%d.%m %H:%M")
+        if re.search(r"через\s+час\b", t):
+            dt = now + timedelta(hours=1)
+            return dt, dt.strftime("%H:%M")
+        if "завтра" in t:
+            dt = (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+            return dt, dt.strftime("%d.%m %H:%M")
+        m = re.search(r"\bв\s+(\d{1,2})[:.](\d{2})\b", t)
+        if m:
+            h, mi = int(m.group(1)), int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                dt = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+                if dt <= now:
+                    dt += timedelta(days=1)
+                return dt, dt.strftime("%d.%m %H:%M")
+        dt = now + timedelta(hours=1)
+        return dt, "~1ч (" + dt.strftime("%H:%M") + ")"
+
+    def _tick(self, app: AppContext) -> None:
+        p = self._db(app)
+        now = time.time()
+        con = sqlite3.connect(str(p))
+        try:
+            rows = con.execute(
+                "SELECT id, text, IFNULL(due,'') FROM reminders "
+                "WHERE IFNULL(done,0)=0 AND IFNULL(trigger_at,0)>0 AND trigger_at<=? "
+                "ORDER BY trigger_at ASC LIMIT 5",
+                (now,),
+            ).fetchall()
+            for rid, text, due in rows:
+                if rid in self._fired:
+                    continue
+                self._fired.add(rid)
+                con.execute("UPDATE reminders SET done=1 WHERE id=?", (rid,))
+                self._announce(app, rid, text, due)
+            con.commit()
+        except Exception as e:
+            print(f"reminders tick: {e}", flush=True)
+        finally:
+            con.close()
+        self._refresh_ui(app)
+
+    def _announce(self, app: AppContext, rid: int, text: str, due: str) -> None:
+        msg = f"Напоминание: {text}"
+        win = getattr(app, "window", None) or app.state.get("gui")
+        if win is not None and hasattr(win, "publish_assistant_message"):
+            try:
+                win.publish_assistant_message(msg)
+                return
+            except Exception:
+                pass
+        print(f"⏰ {msg} (до {due})", flush=True)
 
     def tool_list(self, app: AppContext, **kw) -> str:
         rows = self._rows(app)

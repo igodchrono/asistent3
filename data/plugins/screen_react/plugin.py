@@ -4,6 +4,7 @@ class PluginImpl(Plugin):
     id = "screen_react_stub"
     name = "Реакция на экран (stub → screen)"
     version = "0.0.0"
+    hidden = True
     def on_load(self, app: AppContext) -> None:
         print("👁 screen_react stub: используй плагин screen", flush=True)
 def register():

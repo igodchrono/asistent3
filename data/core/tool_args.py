@@ -35,6 +35,7 @@ TOOL_ARG_ALLOWLIST: Dict[str, Set[str]] = {
     "note_find": {"text", "query"},
     "reminder_add": {"text", "query"},
     "reminder_list": set(),
+    "reminder_delete": {"text", "query", "id"},
     "pc_open": {"target", "query"},
     "pc_close": {"target", "query"},
     "pc_volume": {"direction"},

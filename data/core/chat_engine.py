@@ -443,7 +443,12 @@ class ChatEngine:
 
 
         if intent == "deep_think":
-            self.app.state["llm_max_tokens"] = 4096
+            n = 4096
+            try:
+                n = int(self.app.get_plugin_setting("deep_think", "max_tokens", 4096) or 4096)
+            except Exception:
+                n = 4096
+            self.app.state["llm_max_tokens"] = max(512, min(16000, n))
             intent = "chat"
 
         # describe_screen: снимок + обычный LLM с vision-вложением
@@ -551,3 +556,32 @@ class ChatEngine:
         self._remember("assistant", reply)
         self._trim_history()
         self._schedule_summary()
+
+    async def generate_proactive(self, instruction: str) -> str:
+        """Короткий пинг без записи пользовательской реплики в историю."""
+        cid = (
+            self.app.get_active_character()
+            if hasattr(self.app, "get_active_character")
+            else getattr(self.app.config, "ACTIVE_CHARACTER", "default")
+        )
+        card = ""
+        try:
+            from character_catalog import read_character_card
+            card = (read_character_card(str(cid)) or "").strip()
+        except Exception:
+            card = ""
+        system = card or self.system_prompt or "Ты живой ассистент."
+        system += "\nОдно короткое сообщение от себя. Без канцелярита, без «как ИИ»."
+        try:
+            raw = await self.llm.chat_once(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": instruction},
+                ],
+                temperature=0.7,
+                max_tokens=120,
+            )
+        except Exception as e:
+            print(f"proactive: {e}", flush=True)
+            return ""
+        return self._strip_anim_for_chat(raw or "")

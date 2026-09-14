@@ -6,6 +6,7 @@ class PluginImpl(Plugin):
     id = "emotion_stub"
     name = "Эмоции (stub → persona)"
     version = "0.0.0"
+    hidden = True
     description = "Отключён: используй persona"
 
     def on_load(self, app: AppContext) -> None:

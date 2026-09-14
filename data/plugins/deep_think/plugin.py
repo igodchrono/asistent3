@@ -22,8 +22,8 @@ class PluginImpl(Plugin):
 
     def tool_deep(self, app: AppContext, **kw) -> str:
         n = int(app.get_plugin_setting(self.id, "max_tokens", 4096) or 4096)
-        app.state["llm_max_tokens"] = n
-        return ""  # chat_engine maps deep_think → chat with flag
+        app.state["llm_max_tokens"] = max(512, min(16000, n))
+        return None  # type: ignore  # None → chat_engine продолжает обычный чат
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
         if app.state.get("llm_max_tokens"):

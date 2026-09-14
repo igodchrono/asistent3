@@ -297,8 +297,20 @@ class ChatWindow(QtWidgets.QMainWindow):
 
     def publish_assistant_message(self, text: str) -> None:
         text = (text or "").strip()
-        if text:
-            self._append("Ассистент", text)
+        if not text:
+            return
+        self._append("Ассистент", text)
+        try:
+            eng = self.engine
+            if eng is not None:
+                if hasattr(eng, "history"):
+                    eng.history.append({"role": "assistant", "content": text})
+                    if hasattr(eng, "_trim_history"):
+                        eng._trim_history()
+                if hasattr(eng, "_remember"):
+                    eng._remember("assistant", text)
+        except Exception:
+            pass
 
     def _begin_assistant_stream(self) -> None:
         self._stream_raw = ""

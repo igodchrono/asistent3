@@ -227,9 +227,13 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
     if "список напоминаний" in low or low == "напоминания":
         return {"intent": "reminder_list", "args": {}, "speak": ""}
 
+    url_m = re.search(r"https?://[^\s<>\"']+", raw, re.I)
+    if url_m and any(w in low for w in ("скач", "сохрани", "текст со", "выдай", "в чат", "открой ссыл")):
+        return {"intent": "fetch_url", "args": {"url": url_m.group(0)}, "speak": ""}
+
     if "покажи заметк" in low or low in ("заметки", "покажи заметки"):
         return {"intent": "note_list", "args": {}, "speak": ""}
-    if low.startswith("запиши") or low.startswith("заметка"):
+    if low.startswith("запиши:") or low.startswith("заметка:") or low.startswith("запиши заметк"):
         body = raw.split(":", 1)[-1].strip() if ":" in raw else (raw.split(" ", 1)[-1] if " " in raw else raw)
         return {"intent": "note_add", "args": {"text": body}, "speak": ""}
 
@@ -300,6 +304,7 @@ if __name__ == "__main__":
         ("забудь про чай", "memory_forget", {}),
         ("напомни через час про чай", "reminder_add", {}),
         ("запиши: купить молоко", "note_add", {}),
+        ("запиши стихотворение про лису", None, {}),
         ("громче", "pc_volume", {}),
         ("открой блокнот", "pc_open", {}),
         ("закрой калькулятор", "pc_close", {}),
