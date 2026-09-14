@@ -392,6 +392,25 @@ class ChatEngine:
         text = (text or "").strip()
         if not text:
             return
+        try:
+            from core.policy import check_user_text
+            chk = check_user_text(text, self.app)
+        except Exception as e:
+            print(f"policy check: {e}", flush=True)
+            chk = {"blocked": False}
+        if chk.get("blocked"):
+            reply = str(chk.get("refusal") or "Нет.").strip()
+            # always-block: не кладём запрос в память
+            if chk.get("level") != "always":
+                self.history.append({"role": "user", "content": text})
+                self._remember("user", text)
+                self._trim_history()
+            self.history.append({"role": "assistant", "content": reply})
+            self._remember("assistant", reply)
+            self._trim_history()
+            print(f"policy: block level={chk.get('level')} hit={chk.get('hit')!r}", flush=True)
+            yield reply
+            return
         self.history.append({"role": "user", "content": text})
         self._remember("user", text)
         self._trim_history()
@@ -497,7 +516,8 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            card = (read_character_card(str(cid)) or "").strip()
+            from core.policy import sanitize_card
+            card = sanitize_card(read_character_card(str(cid)) or "").strip()
         except Exception:
             card = ""
 
@@ -568,6 +588,14 @@ class ChatEngine:
                 print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
 
         reply = self._strip_anim_for_chat(reply)
+        try:
+            from core.policy import check_assistant_text
+            leak = check_assistant_text(reply, self.app)
+            if leak.get("blocked"):
+                reply = str(leak.get("refusal") or "Эту тему я не обсуждаю.")
+                print(f"policy: stripped assistant leak hit={leak.get('hit')!r}", flush=True)
+        except Exception as e:
+            print(f"policy after: {e}", flush=True)
 
         if self.history and self.history[-1]["role"] == "assistant":
             self.history[-1]["content"] = reply
@@ -587,7 +615,8 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            card = (read_character_card(str(cid)) or "").strip()
+            from core.policy import sanitize_card
+            card = sanitize_card(read_character_card(str(cid)) or "").strip()
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
