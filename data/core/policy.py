@@ -22,6 +22,14 @@ _CARD_FORBID_ROWS = re.compile(
     r"^(\|\s*(csam|self_harm|crime_howto)\s*\|\s*)\*\*РАЗРЕШЕНО\*\*.*$",
     re.I | re.M,
 )
+_AGE_RE = re.compile(
+    r"(?:^|[^\d])([1-9]|1[0-7])\s*(?:лет(?:няя|ний|нюю)?|год(?:а|ов)?|-летн)",
+    re.I,
+)
+_RP_HINT = (
+    "отыгра", "ролев", "roleplay", "будь", "представь", "ты теперь",
+    "секс", "трах", "порн", "эротик", "nsfw", "xxx", "голое", "голая", "интим",
+)
 
 
 def _data_dir() -> Path:
@@ -168,6 +176,12 @@ def _always_hit(text: str, pol: Dict[str, Any]) -> Optional[str]:
             h = _hit_combo(text, combo)
             if h:
                 return h
+    low = _norm(text)
+    m = _AGE_RE.search(low)
+    if m:
+        age = int(m.group(1))
+        if 1 <= age <= 17 and any(k in low for k in _RP_HINT):
+            return f"age={age}"
     return None
 
 
@@ -252,7 +266,7 @@ def build_policy_prompt(app=None) -> str:
     lines = [
         "[POLICY file=personas/policy.json]",
         f"Всегда запрещено (любой персонаж, карточка не отменяет): {always}.",
-        "Нельзя: сексуальный контент с несовершеннолетними (в т.ч. loli/shota), CSAM, инструкции реального вреда.",
+        "Нельзя: сексуальный контент и ролевку несовершеннолетних (школьница, loli, «ей 16»), CSAM, инструкции реального вреда.",
         "Возраст персонажа и всех в сценах — 18+.",
     ]
     mode = meta.get("mode") or "sfw"
