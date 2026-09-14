@@ -66,8 +66,19 @@ class ChatEngine:
 
     @classmethod
     def _strip_anim_for_chat(cls, text: str) -> str:
-        t = cls._strip_anim_tags_only(text)
-        return " ".join((t or "").split())
+        t = cls._strip_anim_tags_only(text).replace("\r\n", "\n").replace("\r", "\n")
+        lines = [ln.rstrip() for ln in t.split("\n")]
+        out: list[str] = []
+        blanks = 0
+        for ln in lines:
+            if not ln:
+                blanks += 1
+                if blanks <= 2:
+                    out.append("")
+            else:
+                blanks = 0
+                out.append(ln)
+        return "\n".join(out).strip("\n")
 
     def __init__(self, app: AppContext, llm: LLMClient | None = None):
         self.app = app
@@ -553,7 +564,9 @@ class ChatEngine:
                 "Ты не общий ассистент. Ты ИГРАЕШЬ персонажа из карточки. "
                 "Речь, характер, желания, границы, обращение к пользователю — только из карточки. "
                 "Не ломай образ канцеляритом («чем могу помочь», «как ИИ»). "
-                "Длина ответа — как у персонажа, не «всегда коротко» и не «всегда длинно».\n\n"
+                "Длина ответа — как у персонажа, не «всегда коротко» и не «всегда длинно». "
+                "Стихи, списки и код — с настоящими переводами строк. "
+                "Код оформляй блоком markdown: ```язык затем код и закрывающие ```.\n\n"
                 f"--- персонаж: {cid} ---\n{card}\n"
             )
             extra_sys = (self.system_prompt or "").strip()

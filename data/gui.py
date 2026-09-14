@@ -29,11 +29,78 @@ except Exception:
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".yml"}
 _ANIM_RE = re.compile(r"\[ANIM:[a-zA-Z0-9_]+\]", re.I)
+_FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)\r?\n?(.*?)```", re.S)
+_INLINE_RE = re.compile(r"`([^`\n]+)`")
+
+
+def _keep_lines(text: str) -> str:
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in t.split("\n")]
+    out: list[str] = []
+    blanks = 0
+    for ln in lines:
+        if not ln:
+            blanks += 1
+            if blanks <= 2:
+                out.append("")
+        else:
+            blanks = 0
+            out.append(ln)
+    return "\n".join(out).strip("\n")
 
 
 def _strip_anim(text: str) -> str:
-    t = _ANIM_RE.sub("", text or "")
-    return " ".join(t.split())
+    return _keep_lines(_ANIM_RE.sub("", text or ""))
+
+
+def _html_line(line: str) -> str:
+    i = 0
+    while i < len(line) and line[i] in " \t":
+        i += 1
+    lead = line[:i].replace("\t", "    ").replace(" ", "&nbsp;")
+    rest = html.escape(line[i:])
+
+    def _code(m: re.Match) -> str:
+        return (
+            "<code style='background:#3a3a3a;padding:1px 4px;border-radius:3px;"
+            f"font-family:Consolas,monospace;'>{m.group(1)}</code>"
+        )
+
+    rest = _INLINE_RE.sub(_code, rest)
+    return lead + rest
+
+
+def _html_prose(text: str) -> str:
+    if not text:
+        return ""
+    return "<br>".join(_html_line(ln) for ln in text.split("\n"))
+
+
+def _html_code(code: str) -> str:
+    body = html.escape((code or "").replace("\t", "    ").rstrip("\n"))
+    body = body.replace(" ", "&nbsp;").replace("\n", "<br>")
+    return (
+        '<pre style="background:#1a1a1a;color:#e8e8e8;padding:8px 10px;margin:8px 0;'
+        "border:1px solid #444;border-radius:6px;"
+        'font-family:Consolas,\'Cascadia Code\',monospace;font-size:12.5px;">'
+        f"{body}</pre>"
+    )
+
+
+def _format_chat_html(text: str) -> str:
+    t = text or ""
+    chunks: list[str] = []
+    pos = 0
+    for m in _FENCE_RE.finditer(t):
+        if m.start() > pos:
+            chunks.append(_html_prose(t[pos:m.start()].strip("\n")))
+        chunks.append(_html_code(m.group(2) or ""))
+        pos = m.end()
+    if pos == 0:
+        return _html_prose(t)
+    if pos < len(t):
+        chunks.append(_html_prose(t[pos:].strip("\n")))
+    return "".join(c for c in chunks if c)
 
 
 class _GuiBridge(QtCore.QObject):
@@ -273,7 +340,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def _html_text(self, text: str) -> str:
-        return html.escape(text or "").replace("\n", "<br>")
+        return _format_chat_html(text or "")
 
     def _html_file(self, path: Path) -> str:
         uri = path.resolve().as_uri()
@@ -374,34 +441,33 @@ class ChatWindow(QtWidgets.QMainWindow):
         if not vis:
             return
         self.chat.moveCursor(QtGui.QTextCursor.End)
-        self.chat.insertHtml(self._html_text(vis))
+        self.chat.insertHtml(_html_prose(vis))
         self.chat.moveCursor(QtGui.QTextCursor.End)
         bar = self.chat.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def _finish_assistant_stream(self, replace: str | None = None) -> None:
-        if replace:
-            try:
-                cur = self.chat.textCursor()
-                cur.setPosition(int(getattr(self, "_stream_pos", 0)))
-                cur.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
-                cur.removeSelectedText()
-                self.chat.setTextCursor(cur)
-            except Exception:
-                pass
-            self._append("Ассистент", replace)
-            return
-        raw = getattr(self, "_stream_raw", "") or ""
+        raw = replace if replace else _strip_anim(getattr(self, "_stream_raw", "") or "")
         extra = ""
-        for m in re.findall(r"\[фото:\s*([^\]]+)\]", raw):
+        src = replace if replace else (getattr(self, "_stream_raw", "") or "")
+        for m in re.findall(r"\[фото:\s*([^\]]+)\]", src):
             fp = Path(m.strip())
             if fp.exists():
                 extra += self._html_file(fp)
-        self.chat.moveCursor(QtGui.QTextCursor.End)
-        if extra:
-            self.chat.insertHtml(extra)
-        self.chat.insertHtml("</div>")
-        self.chat.moveCursor(QtGui.QTextCursor.End)
+                raw = raw.replace(f"[фото: {m.strip()}]", "")
+        try:
+            cur = self.chat.textCursor()
+            cur.setPosition(int(getattr(self, "_stream_pos", 0)))
+            cur.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+            cur.removeSelectedText()
+            self.chat.setTextCursor(cur)
+        except Exception:
+            pass
+        color = "#9ad7a0"
+        body = _format_chat_html(raw)
+        self._append_html(
+            f'<div style="margin:8px 0 12px 0;"><b style="color:{color};">Ассистент</b><br>{body}{extra}</div>'
+        )
 
     def _voice_plugin(self):
         return self.engine.app.plugins.get("voice") or self.engine.app.state.get("voice_plugin")
