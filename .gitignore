@@ -41,6 +41,13 @@ data/attachments/
 data/cache/
 data/selftest_files/
 
+# QA политики — персонажи и логи только локально
+data/selftest_policy/logs/
+data/personas/characters/qa-open/
+data/personas/characters/qa-lock/
+data/personas/characters/тест-макс/
+data/personas/characters/тест-лок/
+
 # Модели и чекпоинты — HuggingFace / релизы, не git
 data/models/**
 !data/models/README.md
