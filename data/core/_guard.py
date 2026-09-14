@@ -20,8 +20,17 @@ _MODE_LOCK: set = set()
 _CARD_FORBID_ROWS = re.compile(r"(?!)")  # ничего, пока не прочитали json
 _LOCKDOWN = {
     "_lockdown": True,
-    "always_refusal": "Фильтр не найден: положите filter.json в data/core/.",
+    "always_refusal": "Фильтр не найден: положите filter.json в data/core/ (или filter_soft/medium/hard.json).",
 }
+
+_FILTER_NAMES = ("filter.json", "filter_medium.json", "filter_soft.json", "filter_hard.json")
+
+
+def _is_filter_file(p: Path) -> bool:
+    try:
+        return p.is_file() and p.stat().st_size > 20
+    except Exception:
+        return False
 
 
 def filter_path() -> Path:
@@ -29,33 +38,53 @@ def filter_path() -> Path:
     env = (os.environ.get("ASISTENT_FILTER") or os.environ.get("LISICHKA_FILTER") or "").strip()
     if env:
         p = Path(env)
-        if p.is_file():
+        if _is_filter_file(p):
             return p
+        if p.is_dir():
+            for name in _FILTER_NAMES:
+                q = p / name
+                if _is_filter_file(q):
+                    return q
     here = Path(__file__).resolve().parent
     data = here.parent
     root = data.parent
-    cands = [
-        root / "filter.json",
-        Path.home() / ".asistent" / "filter.json",
-        here / "filter.json",
-        data / "filter.json",
-        Path.cwd() / "core" / "filter.json",
-        Path.cwd() / "data" / "core" / "filter.json",
-    ]
+    dirs = [here, data, root, Path.cwd(), Path.cwd() / "core", Path.cwd() / "data" / "core"]
     try:
         import config as _cfg
         root2 = Path(getattr(_cfg, "DATA_DIR", data))
-        cands.insert(2, root2 / "core" / "filter.json")
-        cands.insert(3, root2.parent / "filter.json")
+        dirs[1:1] = [root2 / "core", root2, root2.parent]
     except Exception:
         pass
-    for p in cands:
+    try:
+        dirs.append(Path.home() / ".asistent")
+    except Exception:
+        pass
+    seen = set()
+    for d in dirs:
         try:
-            if p.is_file():
-                return p
+            d = d.resolve()
         except Exception:
             continue
+        if d in seen:
+            continue
+        seen.add(d)
+        for name in _FILTER_NAMES:
+            q = d / name
+            if _is_filter_file(q):
+                return q
     return here / "filter.json"
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    raw = path.read_bytes()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8-sig")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("filter.json не объект")
+    return data
 
 
 def policy_path() -> Path:
@@ -103,19 +132,20 @@ def load_policy(reload: bool = False) -> Dict[str, Any]:
     if _CACHE is not None and not reload:
         return _CACHE
     path = filter_path()
+    print(f"filter: path={path} exists={path.exists()}", flush=True)
     if not path.exists():
         print("filter.json нет — lockdown", flush=True)
         _CACHE = dict(_LOCKDOWN)
         return _CACHE
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not list(data.get("always_block") or []):
-            print("filter.json пустой always_block — lockdown", flush=True)
+        data = _read_json(path)
+        if not list(data.get("always_block") or []):
+            print(f"filter.json пустой always_block ({path}) — lockdown", flush=True)
             _CACHE = dict(_LOCKDOWN)
             return _CACHE
         _CACHE = data
     except Exception as e:
-        print(f"filter.json: {e} — lockdown", flush=True)
+        print(f"filter.json {path}: {e} — lockdown", flush=True)
         _CACHE = dict(_LOCKDOWN)
         return _CACHE
     _compile_from(_CACHE)
