@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from urllib.error import HTTPError, URLError
 
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
@@ -249,6 +249,10 @@ class PluginImpl(Plugin):
         if not src:
             return "Нет ссылки."
         try:
+            from core.net_guard import blocked_url_reason
+            reason = blocked_url_reason(src)
+            if reason:
+                return f"Ссылка заблокирована ({reason}). Качаю только публичные http(s)."
             data, ctype, final = self._http_get(src)
         except Exception as e:
             return f"Не скачать: {e}"
@@ -542,6 +546,11 @@ class PluginImpl(Plugin):
         return out
 
     def _http_get(self, url: str, timeout: int = 25) -> Tuple[bytes, str, str]:
+        from core.net_guard import blocked_url_reason, guarded_urlopen
+
+        reason = blocked_url_reason(url)
+        if reason:
+            raise URLError(f"blocked url: {reason}")
         req = Request(
             url,
             headers={
@@ -550,7 +559,7 @@ class PluginImpl(Plugin):
                 "Accept-Language": "ru,en;q=0.8",
             },
         )
-        with urlopen(req, timeout=timeout) as resp:
+        with guarded_urlopen(url, req=req, timeout=timeout) as resp:
             data = resp.read()
             ctype = ""
             try:

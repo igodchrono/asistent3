@@ -16,9 +16,24 @@ ALLOWED_KEYS = {
 def settings_path() -> Path:
     return Path(getattr(config, "SETTINGS_FILE", None) or (Path(config.DATA_DIR) / "settings.json"))
 
+def example_path() -> Path:
+    return settings_path().with_name("settings.example.json")
+
+
 def load_settings() -> Dict[str, Any]:
     p = settings_path()
     if not p.is_file():
+        ex = example_path()
+        if ex.is_file():
+            try:
+                data = json.loads(ex.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+            try:
+                p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+            return data
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))

@@ -223,7 +223,12 @@ class ChatEngine:
         if not callable(fn):
             return f"Инструмент «{name}» не зарегистрирован (плагин выключен?)."
         try:
-            return fn(self.app, **(args or {}))
+            from .tool_args import filter_tool_args
+            safe = filter_tool_args(name, args)
+        except Exception:
+            safe = {}
+        try:
+            return fn(self.app, **safe)
         except TypeError:
             # args mismatch — вызвать только с app
             try:

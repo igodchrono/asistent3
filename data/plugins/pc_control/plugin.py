@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""PC tools — только исполнители, без regex-фраз."""
+"""PC tools — только исполнители, без regex-фраз.
+
+Песочница по умолчанию: блокнот и калькулятор.
+confirmed принимается только из _execute_pending (_internal=True), не из LLM.
+"""
 from __future__ import annotations
 
 import fnmatch
@@ -23,24 +27,82 @@ _APP_ALIASES = {
 }
 _CLOSE_ALIASES = {
     "калькулятор": ["CalculatorApp.exe", "win32calc.exe", "calc.exe"],
+    "calc": ["CalculatorApp.exe", "win32calc.exe", "calc.exe"],
+    "calculator": ["CalculatorApp.exe", "win32calc.exe", "calc.exe"],
     "блокнот": ["notepad.exe"],
+    "notepad": ["notepad.exe"],
+}
+_SANDBOX_OPEN = {
+    "калькулятор": "calc",
+    "calc": "calc",
+    "calculator": "calc",
+    "блокнот": "notepad",
+    "notepad": "notepad",
 }
 
 
 class PluginImpl(Plugin):
     id = "pc_control"
     name = "Управление ПК"
-    version = "2.0.0"
+    version = "2.1.0"
     settings_tab = "own"
     settings_tab_title = "Управление ПК"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
-        SettingField("allow_process_close", "Разрешить закрытие программ", "bool", True),
-        SettingField("confirm_danger", "Спрашивать перед очисткой корзины", "bool", True),
+        SettingField(
+            "sandbox",
+            "Песочница (только блокнот и калькулятор)",
+            "bool",
+            True,
+            help="Запрещает произвольные пути, поиск по дискам, корзину и запуск exe.",
+        ),
+        SettingField(
+            "allow_process_close",
+            "Разрешить закрытие программ",
+            "bool",
+            False,
+            help="taskkill. В песочнице — только блокнот/калькулятор.",
+        ),
+        SettingField(
+            "confirm_danger",
+            "Спрашивать перед опасным",
+            "bool",
+            True,
+            help="Очистка корзины и закрытие чужих процессов — только после «да» в чате. "
+            "Флаг confirmed из модели игнорируется.",
+        ),
     ]
 
     def on_load(self, app: AppContext) -> None:
         self.app = app
+        sb = "sandbox" if self._sandbox(app) else "full"
+        print(
+            f"🖥 pc_control: {sb}, close={self._allow_close(app)}, confirm={self._confirm_danger(app)}",
+            flush=True,
+        )
+
+    def _sandbox(self, app: AppContext) -> bool:
+        return bool(app.get_plugin_setting(self.id, "sandbox", True))
+
+    def _allow_close(self, app: AppContext) -> bool:
+        return bool(app.get_plugin_setting(self.id, "allow_process_close", False))
+
+    def _confirm_danger(self, app: AppContext) -> bool:
+        return bool(app.get_plugin_setting(self.id, "confirm_danger", True))
+
+    @staticmethod
+    def _is_sandbox_app(target: str) -> bool:
+        t = (target or "").strip().lower()
+        t = t.replace(".exe", "")
+        return t in _SANDBOX_OPEN
+
+    def _sandbox_block(self, app: AppContext, action: str) -> Optional[str]:
+        if self._sandbox(app):
+            return (
+                f"Песочница ПК: «{action}» нельзя. "
+                "Разрешены только блокнот и калькулятор. Сними галку в настройках «Управление ПК»."
+            )
+        return None
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["pc_open"] = self.tool_open
@@ -98,15 +160,14 @@ class PluginImpl(Plugin):
         if low in ("тише",):
             return HookResult(True, self.tool_volume(app, direction="down"))
         if "найди папк" in low:
-            # найди папку X / найди папки X на диск D
-            import re
-            m = re.search(r"папк[уи]\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
+            import re as _re
+            m = _re.search(r"папк[уи]\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
             q = m.group(1).strip() if m else low.split()[-1]
             disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
             return HookResult(True, self.tool_search_folders(app, query=q, disk=disk))
         if low.startswith("найди файл") or "найди файл" in low:
-            import re
-            m = re.search(r"файл\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
+            import re as _re
+            m = _re.search(r"файл\s+(.+?)(?:\s+на\s+диск\s+([a-z]))?$", low)
             q = m.group(1).strip() if m else "*"
             disk = (m.group(2) or "").upper() if m and m.lastindex and m.group(2) else ""
             return HookResult(True, self.tool_search_files(app, query=q, disk=disk))
@@ -117,7 +178,6 @@ class PluginImpl(Plugin):
             return HookResult(True, self.tool_create_text(app, name=name))
         if "в корзину" in low or "в корзину" in text.lower():
             import re as _re
-            # "удали файл NAME в корзину" / "перемести NAME в корзину"
             m = _re.search(
                 r"(?:удали|удалить|перемести|помести)\s+(?:файл\s+)?(.+?)\s+в\s+корзину",
                 text,
@@ -140,14 +200,6 @@ class PluginImpl(Plugin):
         part = title_part.replace("'", "''")[:80]
         ps = (
             f"$part='{part}'; "
-            "Get-Process | Where-Object { $_.MainWindowTitle -like \"*$part*\" } | "
-            "Select-Object -First 1 | ForEach-Object { "
-            "  try { $_.CloseMainWindow() | Out-Null } catch {} "
-            "}"
-        )
-        # только focus, не close — simplified set foreground
-        ps = (
-            f"$part='{part}'; "
             "Add-Type -Name W -Namespace Z -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h,int c);'; "
             "$p=Get-Process | Where-Object { $_.MainWindowTitle -like \"*$part*\" } | Select-Object -First 1; "
             "if($p){ [Z.W]::ShowWindow($p.MainWindowHandle,3); [Z.W]::SetForegroundWindow($p.MainWindowHandle) }"
@@ -160,15 +212,31 @@ class PluginImpl(Plugin):
     def _execute_pending(self, app, pending):
         action = pending.get("action")
         if action == "empty_recycle":
-            return self.tool_empty_recycle(app, confirmed=True)
+            return self.tool_empty_recycle(app, confirmed=True, _internal=True)
         if action == "close":
-            return self.tool_close(app, target=pending.get("target") or "", confirmed=True)
+            return self.tool_close(
+                app, target=pending.get("target") or "", confirmed=True, _internal=True
+            )
         return "Неизвестное действие."
 
     def tool_open(self, app: AppContext, target: str = "", **kw) -> str:
         target = (target or kw.get("query") or "").strip()
         if not target:
             return "Не указано, что открыть."
+        if self._sandbox(app):
+            alias = _SANDBOX_OPEN.get(target.lower())
+            if not alias:
+                return (
+                    f"Песочница ПК: «{target}» открыть нельзя. "
+                    "Можно: блокнот, калькулятор."
+                )
+            exe = shutil.which(alias) or shutil.which(alias + ".exe") or alias
+            try:
+                subprocess.Popen([exe], close_fds=True)
+            except Exception as e:
+                return f"Не запущено: {e}"
+            app.state["pc_last_opened"] = alias
+            return f"Запущено (песочница): {alias}"
         alias = _APP_ALIASES.get(target.lower(), target)
         path = Path(os.path.expandvars(os.path.expanduser(alias)))
         if path.exists():
@@ -179,7 +247,6 @@ class PluginImpl(Plugin):
         if exe:
             subprocess.Popen([exe], close_fds=True)
             return f"Запущено: {target}"
-        # попробовать как путь
         try:
             os.startfile(target)
             app.state["pc_last_opened"] = target
@@ -187,22 +254,41 @@ class PluginImpl(Plugin):
         except Exception:
             return f"Не найдено: {target}"
 
-    def tool_close(self, app: AppContext, target: str = "", confirmed: bool = False, **kw) -> str:
+    def tool_close(
+        self,
+        app: AppContext,
+        target: str = "",
+        confirmed: bool = False,
+        _internal: bool = False,
+        **kw,
+    ) -> str:
         target = (target or kw.get("query") or "").strip()
-        if not confirmed and target and target.lower() not in ("калькулятор", "блокнот"):
+        if not _internal:
+            confirmed = False
+        if not self._allow_close(app):
+            return "Закрытие программ выключено (allow_process_close)."
+        if self._sandbox(app) and not self._is_sandbox_app(target):
+            return self._sandbox_block(app, f"закрыть {target}") or "Песочница."
+        need_confirm = self._confirm_danger(app) and not self._is_sandbox_app(target)
+        if need_confirm and not confirmed:
             self._pending = {"action": "close", "target": target}
             return f"Подтвердите: закрыть {target}? да/нет"
-        key = target.lower()
+        key = target.lower().replace(".exe", "")
         candidates = list(_CLOSE_ALIASES.get(key, []))
         if not candidates:
+            if self._sandbox(app):
+                return self._sandbox_block(app, f"закрыть {target}") or "Песочница."
             name = target if target.lower().endswith(".exe") else target + ".exe"
             candidates = [name]
         closed = []
         for image in candidates:
-            r = subprocess.run(
-                ["taskkill", "/IM", image, "/F"],
-                capture_output=True, text=True,
-            )
+            try:
+                r = subprocess.run(
+                    ["taskkill", "/IM", image, "/F"],
+                    capture_output=True, text=True,
+                )
+            except FileNotFoundError:
+                return "taskkill недоступен (нужен Windows)."
             if r.returncode == 0:
                 closed.append(image)
         return f"Закрыто: {', '.join(closed)}" if closed else f"Не найдено процесс: {target}"
@@ -218,6 +304,9 @@ class PluginImpl(Plugin):
         return "Громкость увеличена." if key == 0xAF else "Громкость уменьшена."
 
     def tool_search_files(self, app: AppContext, query: str = "*", disk: str = "", **kw) -> str:
+        blocked = self._sandbox_block(app, "поиск файлов по дискам")
+        if blocked:
+            return blocked
         query = (query or kw.get("text") or kw.get("path") or "*").strip()
         root_text = (disk or kw.get("disk") or "").strip()
         if not root_text:
@@ -266,6 +355,9 @@ class PluginImpl(Plugin):
         return f"Найдено файлов: {len(results)}\n{lines}"
 
     def tool_search_folders(self, app: AppContext, query: str = "", disk: str = "", **kw) -> str:
+        blocked = self._sandbox_block(app, "поиск папок")
+        if blocked:
+            return blocked
         query = (query or kw.get("text") or "").strip().lower()
         if not query:
             return "Укажи имя папки."
@@ -311,6 +403,9 @@ class PluginImpl(Plugin):
         return f"Найдено папок: {len(results)}\n{lines}"
 
     def tool_open_found(self, app: AppContext, **kw) -> str:
+        blocked = self._sandbox_block(app, "открыть найденный файл")
+        if blocked:
+            return blocked
         path = str(app.state.get("pc_last_found") or "")
         if not path:
             return "Нет сохранённого результата поиска."
@@ -319,6 +414,11 @@ class PluginImpl(Plugin):
         return f"Открыто: {path}"
 
     def tool_close_last(self, app: AppContext, **kw) -> str:
+        if not self._allow_close(app):
+            return "Закрытие программ выключено (allow_process_close)."
+        blocked = self._sandbox_block(app, "закрыть последнее окно")
+        if blocked:
+            return blocked
         path = str(app.state.get("pc_last_opened") or app.state.get("pc_last_found") or "")
         if not path:
             return "Нет последнего открытого."
@@ -345,21 +445,28 @@ class PluginImpl(Plugin):
         return f"Закрыто: окна с «{p.name}»"
 
     def tool_create_text(self, app: AppContext, name: str = "note.txt", **kw) -> str:
+        blocked = self._sandbox_block(app, "создать файл")
+        if blocked:
+            return blocked
         name = (name or kw.get("text") or "note.txt").strip().strip('"')
         p = Path(name)
-        if not p.is_absolute():
-            folder = Path(getattr(app.config, "DATA_DIR", Path("."))) / "selftest_files"
-            folder.mkdir(parents=True, exist_ok=True)
-            if not name.lower().endswith(".txt"):
-                name += ".txt"
-            p = folder / name
+        if p.is_absolute():
+            return "Абсолютный путь запрещён. Укажи только имя файла."
+        folder = Path(getattr(app.config, "DATA_DIR", Path("."))) / "selftest_files"
+        folder.mkdir(parents=True, exist_ok=True)
+        if not name.lower().endswith(".txt"):
+            name += ".txt"
+        # только имя, без обхода каталогов
+        p = folder / Path(name).name
         p.write_text(f"created by pc_control\n{p}\n", encoding="utf-8")
         app.state["pc_last_text_file"] = str(p)
         return f"Создан файл: {p}"
 
     def tool_recycle(self, app: AppContext, name: str = "", **kw) -> str:
+        blocked = self._sandbox_block(app, "корзина")
+        if blocked:
+            return blocked
         raw = (name or kw.get("text") or "").strip().strip('"')
-        # убрать мусорные префиксы
         for junk in ("удали файл ", "удалить файл ", "удали ", "файл "):
             if raw.lower().startswith(junk):
                 raw = raw[len(junk):].strip()
@@ -368,23 +475,28 @@ class PluginImpl(Plugin):
         if not raw:
             return "Укажи файл."
         p = Path(raw)
+        data_dir = Path(getattr(app.config, "DATA_DIR", Path("."))).resolve()
         if not p.is_file():
-            data_dir = Path(getattr(app.config, "DATA_DIR", Path(".")))
             for cand in (
                 data_dir / "selftest_files" / Path(raw).name,
                 data_dir / "selftest_files" / raw,
-                Path(raw).name and data_dir / "selftest_files" / Path(raw).name,
             ):
                 if cand and Path(cand).is_file():
                     p = Path(cand)
                     break
         if not p.is_file():
-            # fallback last created
             last = str(app.state.get("pc_last_text_file") or "")
             if last and Path(last).is_file():
                 p = Path(last)
             else:
                 return f"Файл не найден: {raw}"
+        try:
+            p_res = p.resolve()
+            allowed = (data_dir / "selftest_files").resolve()
+            if allowed not in p_res.parents and p_res.parent != allowed:
+                return f"В корзину можно только файлы из {allowed}"
+        except Exception:
+            return "Некорректный путь."
         parent = str(p.parent).replace("'", "''")
         nm = p.name.replace("'", "''")
         ps = (
@@ -397,7 +509,18 @@ class PluginImpl(Plugin):
             return f"Не удалось в корзину: {(r.stderr or r.stdout or '')[:200]}"
         return f"Файл отправлен в корзину: {p.name}"
 
-    def tool_empty_recycle(self, app: AppContext, confirmed: bool = False, **kw) -> str:
+    def tool_empty_recycle(
+        self,
+        app: AppContext,
+        confirmed: bool = False,
+        _internal: bool = False,
+        **kw,
+    ) -> str:
+        if not _internal:
+            confirmed = False
+        blocked = self._sandbox_block(app, "очистить корзину")
+        if blocked:
+            return blocked
         if not confirmed:
             self._pending = {"action": "empty_recycle"}
             return "Подтвердите: очистить корзину? да/нет"
