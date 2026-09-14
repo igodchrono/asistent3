@@ -21,11 +21,6 @@ from urllib.parse import quote
 
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
-_BLOCK = (
-    "child", "children", "kid", "teen", "underage", "lolita", "loli", "shota",
-    "minor", "школьн", "школьниц", "школьник", "ребён", "ребен", "детск", "малолет",
-    "schoolgirl", "school boy", "schoolboy",
-)
 _ASK = (
     "сгенерируй", "нарисуй", "сделай картин", "сделай изображ",
     "сгенери изображение", "сгенерируй изображение", "сгенерируй картин",
@@ -146,7 +141,7 @@ class PluginImpl(Plugin):
             return None
 
         if any(k in low for k in _ASK):
-            if self._blocked(text):
+            if self._blocked(text, app):
                 return HookResult(True, "Эту тему я не обсуждаю.")
             refs = self._refs(app)
             app.state["imggen_request"] = text
@@ -397,7 +392,7 @@ class PluginImpl(Plugin):
                     "не смогла получить промпт от LLM. проверь LM Studio "
                     "(http://127.0.0.1:1234) и повтори запрос."
                 )
-        if self._blocked(" ".join(data.values())):
+        if self._blocked(" ".join(data.values()), app):
             app.state["imggen_stage"] = "idle"
             return "Такое не рисую."
         app.state["imggen_prompt_qwen"] = data.get("qwen") or ""
@@ -481,8 +476,13 @@ class PluginImpl(Plugin):
             "clean lineart, high detail, no watermark"
         )
 
-    def _blocked(self, q: str) -> bool:
-        return any(w in (q or "").lower() for w in _BLOCK)
+    def _blocked(self, q: str, app: Optional[AppContext] = None) -> bool:
+        try:
+            from core.policy import check_user_text
+            r = check_user_text(q or "", app if app is not None else self.app)
+            return bool(r.get("blocked"))
+        except Exception:
+            return True
 
     def _refs(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])

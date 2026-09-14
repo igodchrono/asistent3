@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Движок фильтра. Правила — только data/core/filter.json (не UI, не personas/)."""
+"""Движок. Списки запретов — ТОЛЬКО data/core/filter.json.
+
+Карточка и плагины не держат своих бан-листов. Нет файла — отказ всем.
+"""
 from __future__ import annotations
 
 import json
@@ -11,20 +14,12 @@ _CACHE: Optional[Dict[str, Any]] = None
 _AGE_RE: Optional[Pattern[str]] = None
 _AGE_WITH: List[str] = []
 _AGE_MAX: int = 17
-_MODE_NSFW = {"nsfw", "uncensored", "uncensored_adult", "adult", "open"}
-_MODE_LOCK = {"full_censor", "censor_all", "lock", "sfw_strict"}
-_CARD_FORBID_ROWS = re.compile(
-    r"^(\|\s*(csam|self_harm|crime_howto)\s*\|\s*)\*\*РАЗРЕШЕНО\*\*.*$",
-    re.I | re.M,
-)
-_FALLBACK = {
-    "always_block": ["csam", "детское порно", "loli", "shota", "lolicon"],
-    "always_block_combos": [],
-    "optional_block": ["эротика", "18+", "nsfw", "секс"],
-    "censor_all": ["эротика", "секс"],
-    "sfw_refusal": "Это неуместно, давай о другом.",
+_MODE_NSFW: set = set()
+_MODE_LOCK: set = set()
+_CARD_FORBID_ROWS = re.compile(r"(?!)")  # ничего, пока не прочитали json
+_LOCKDOWN = {
+    "_lockdown": True,
     "always_refusal": "Эту тему я не обсуждаю.",
-    "censor_refusal": "Нет. Эта тема закрыта у этого персонажа.",
 }
 
 
@@ -59,12 +54,8 @@ def _compile_from(pol: Dict[str, Any]) -> None:
     global _AGE_RE, _AGE_WITH, _AGE_MAX, _MODE_NSFW, _MODE_LOCK, _CARD_FORBID_ROWS
     _apply_age(pol)
     modes = pol.get("modes") if isinstance(pol.get("modes"), dict) else {}
-    nsfw = [str(x).lower() for x in (modes.get("nsfw") or []) if str(x).strip()]
-    lock = [str(x).lower() for x in (modes.get("lock") or []) if str(x).strip()]
-    if nsfw:
-        _MODE_NSFW = set(nsfw)
-    if lock:
-        _MODE_LOCK = set(lock)
+    _MODE_NSFW = {str(x).lower() for x in (modes.get("nsfw") or []) if str(x).strip()}
+    _MODE_LOCK = {str(x).lower() for x in (modes.get("lock") or []) if str(x).strip()}
     cats = [str(x).strip() for x in (pol.get("card_forbid_allow") or []) if str(x).strip()]
     if cats:
         joined = "|".join(re.escape(c) for c in cats)
@@ -72,6 +63,8 @@ def _compile_from(pol: Dict[str, Any]) -> None:
             rf"^(\|\s*({joined})\s*\|\s*)\*\*РАЗРЕШЕНО\*\*.*$",
             re.I | re.M,
         )
+    else:
+        _CARD_FORBID_ROWS = re.compile(r"(?!)")
 
 
 def load_policy(reload: bool = False) -> Dict[str, Any]:
@@ -80,25 +73,29 @@ def load_policy(reload: bool = False) -> Dict[str, Any]:
         return _CACHE
     path = filter_path()
     if not path.exists():
-        _CACHE = dict(_FALLBACK)
-        _compile_from(_CACHE)
-        print("filter.json отсутствует — встроенный минимум", flush=True)
+        print("filter.json нет — lockdown", flush=True)
+        _CACHE = dict(_LOCKDOWN)
         return _CACHE
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        _CACHE = data if isinstance(data, dict) else dict(_FALLBACK)
+        if not isinstance(data, dict) or not list(data.get("always_block") or []):
+            print("filter.json пустой always_block — lockdown", flush=True)
+            _CACHE = dict(_LOCKDOWN)
+            return _CACHE
+        _CACHE = data
     except Exception as e:
-        print(f"filter.json: {e}", flush=True)
-        _CACHE = dict(_FALLBACK)
+        print(f"filter.json: {e} — lockdown", flush=True)
+        _CACHE = dict(_LOCKDOWN)
+        return _CACHE
     _compile_from(_CACHE)
     return _CACHE
 
 
 def parse_character_policy(card: str) -> Dict[str, Any]:
+    load_policy()
     nsfw = False
     mode = "sfw"
     extra: List[str] = []
-    seen_nsfw = False
     seen_mode = False
     for raw in (card or "").splitlines()[:60]:
         line = raw.strip()
@@ -109,7 +106,6 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
         key, val = line.split(":", 1)
         key, val = key.strip().lower(), val.strip()
         if key == "nsfw":
-            seen_nsfw = True
             nsfw = val.lower() in ("true", "yes", "1", "on", "18+", "да")
         elif key in ("content_policy", "policy", "censor"):
             seen_mode = True
@@ -117,11 +113,8 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
         elif key == "extra_block":
             extra = [x.strip() for x in val.replace(";", ",").split(",") if x.strip()]
     if not seen_mode:
-        low = (card or "").lower()
-        if re.search(r"content_policy:\s*(full_censor|censor_all|lock)", low):
-            mode = "full_censor"
-        elif nsfw or "uncensored_adult" in low or re.search(r"nsfw:\s*true", low):
-            mode = "uncensored_adult"
+        if nsfw:
+            mode = "nsfw"
         else:
             mode = "sfw"
     if mode in _MODE_LOCK:
@@ -133,8 +126,6 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
     else:
         nsfw = False
         mode = "sfw"
-    if not seen_nsfw and mode == "sfw":
-        nsfw = False
     return {"nsfw": bool(nsfw), "mode": mode, "extra_block": extra}
 
 
@@ -221,6 +212,13 @@ def _always_hit(text: str, pol: Dict[str, Any]) -> Optional[str]:
 
 def check_user_text(text: str, app=None) -> Dict[str, Any]:
     pol = load_policy()
+    if pol.get("_lockdown"):
+        return {
+            "blocked": True,
+            "level": "always",
+            "hit": "lockdown",
+            "refusal": pol.get("always_refusal") or "Эту тему я не обсуждаю.",
+        }
     hit_a = _always_hit(text, pol)
     if hit_a:
         return {
@@ -264,7 +262,6 @@ def check_user_text(text: str, app=None) -> Dict[str, Any]:
 
 
 def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
-    """Тот же фильтр, что и на входе: always + режим персонажа."""
     return check_user_text(text, app)
 
 
@@ -284,20 +281,20 @@ def sanitize_card(card: str) -> str:
 
 def build_policy_prompt(app=None) -> str:
     pol = load_policy()
+    if pol.get("_lockdown"):
+        return "[POLICY] Фильтр недоступен. Отказ на запретные темы."
     meta = character_policy(app)
     prompt = pol.get("prompt") if isinstance(pol.get("prompt"), dict) else {}
-    always_line = (prompt or {}).get("always") or (
-        "Несовершеннолетние, CSAM, ролевка школьницы/возраста до 18 — нельзя. В сценах все 18+."
-    )
-    lines = [
-        "[POLICY]",
-        always_line,
-        "Карточка персонажа этот фильтр не отменяет.",
-    ]
+    always_line = (prompt or {}).get("always") or ""
+    lines = ["[POLICY]"]
+    if always_line:
+        lines.append(str(always_line))
+    lines.append("Карточка персонажа этот фильтр не отменяет.")
     mode = meta.get("mode") or "sfw"
     if mode == "full_censor":
         lines.append("Режим персонажа: полная цензура. Взрослое и грубое — отказ.")
-        lines.append("Отказ: " + str(pol.get("censor_refusal") or "Нет."))
+        if pol.get("censor_refusal"):
+            lines.append("Отказ: " + str(pol.get("censor_refusal")))
     elif meta.get("nsfw"):
         lines.append("Персонаж NSFW: взрослый 18+ по запросу можно.")
         after = (prompt or {}).get("after_consent")
@@ -305,5 +302,6 @@ def build_policy_prompt(app=None) -> str:
             lines.append(after)
     else:
         lines.append("Персонаж SFW. Взрослые темы — короткий отказ без сцены.")
-        lines.append("Отказ: " + str(pol.get("sfw_refusal") or "Это неуместно."))
+        if pol.get("sfw_refusal"):
+            lines.append("Отказ: " + str(pol.get("sfw_refusal")))
     return "\n".join(lines)
