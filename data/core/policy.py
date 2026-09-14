@@ -1,20 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Общий файл запретов: data/personas/policy.json
-
-Слои:
-  1) always_block — закон, любой персонаж, карточка не отменяет.
-  2) optional_block — SFW-персонажи (nsfw: false).
-  3) censor_all — content_policy: full_censor.
-  4) extra_block — доп. слова из карточки персонажа.
-"""
+"""Движок фильтра. Правила — только data/core/filter.json (не UI, не personas/)."""
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Pattern
 
 _CACHE: Optional[Dict[str, Any]] = None
+_AGE_RE: Optional[Pattern[str]] = None
+_AGE_WITH: List[str] = []
+_AGE_MAX: int = 17
 
 _MODE_NSFW = {"nsfw", "uncensored", "uncensored_adult", "adult", "open"}
 _MODE_LOCK = {"full_censor", "censor_all", "lock", "sfw_strict"}
@@ -22,49 +18,65 @@ _CARD_FORBID_ROWS = re.compile(
     r"^(\|\s*(csam|self_harm|crime_howto)\s*\|\s*)\*\*РАЗРЕШЕНО\*\*.*$",
     re.I | re.M,
 )
-_AGE_RE = re.compile(
-    r"(?:^|[^\d])([1-9]|1[0-7])\s*(?:лет(?:няя|ний|нюю)?|год(?:а|ов)?|-летн)",
-    re.I,
-)
-_RP_HINT = (
-    "отыгра", "ролев", "roleplay", "будь", "представь", "ты теперь",
-    "секс", "трах", "порн", "эротик", "nsfw", "xxx", "голое", "голая", "интим",
-)
+_FALLBACK = {
+    "always_block": ["csam", "детское порно", "loli", "shota", "lolicon"],
+    "always_block_combos": [],
+    "optional_block": ["эротика", "18+", "nsfw", "секс"],
+    "censor_all": ["эротика", "секс"],
+    "sfw_refusal": "Это неуместно, давай о другом.",
+    "always_refusal": "Эту тему я не обсуждаю.",
+    "censor_refusal": "Нет. Эта тема закрыта у этого персонажа.",
+}
 
 
-def _data_dir() -> Path:
-    return Path(__file__).resolve().parents[1]
+def filter_path() -> Path:
+    return Path(__file__).resolve().parent / "filter.json"
 
 
 def policy_path() -> Path:
-    return _data_dir() / "personas" / "policy.json"
+    return filter_path()
+
+
+def _apply_age(pol: Dict[str, Any]) -> None:
+    global _AGE_RE, _AGE_WITH, _AGE_MAX
+    _AGE_RE = None
+    _AGE_WITH = []
+    _AGE_MAX = 17
+    age = pol.get("age_under18") if isinstance(pol.get("age_under18"), dict) else {}
+    raw = str((age or {}).get("regex") or "").strip()
+    if raw:
+        try:
+            _AGE_RE = re.compile(raw, re.I)
+        except re.error as e:
+            print(f"filter.json age regex: {e}", flush=True)
+    _AGE_WITH = [str(x).lower() for x in ((age or {}).get("with") or []) if str(x).strip()]
+    try:
+        _AGE_MAX = int((age or {}).get("max_age") or 17)
+    except Exception:
+        _AGE_MAX = 17
 
 
 def load_policy(reload: bool = False) -> Dict[str, Any]:
     global _CACHE
     if _CACHE is not None and not reload:
         return _CACHE
-    path = policy_path()
+    path = filter_path()
     if not path.exists():
-        _CACHE = {
-            "always_block": ["csam", "детское порно", "loli", "shota"],
-            "optional_block": ["эротика", "18+", "nsfw", "секс"],
-            "censor_all": ["эротика", "секс", "насилие"],
-            "sfw_refusal": "Это неуместно, давай о другом.",
-            "always_refusal": "Эту тему я не обсуждаю.",
-            "censor_refusal": "Нет. Эта тема закрыта у этого персонажа.",
-        }
+        _CACHE = dict(_FALLBACK)
+        _apply_age(_CACHE)
+        print("filter.json отсутствует — встроенный минимум", flush=True)
         return _CACHE
     try:
-        _CACHE = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        _CACHE = data if isinstance(data, dict) else dict(_FALLBACK)
     except Exception as e:
-        print(f"policy.json: {e}", flush=True)
-        _CACHE = {}
+        print(f"filter.json: {e}", flush=True)
+        _CACHE = dict(_FALLBACK)
+    _apply_age(_CACHE)
     return _CACHE
 
 
 def parse_character_policy(card: str) -> Dict[str, Any]:
-    """YAML-подобные поля в начале карточки."""
     nsfw = False
     mode = "sfw"
     extra: List[str] = []
@@ -176,17 +188,19 @@ def _always_hit(text: str, pol: Dict[str, Any]) -> Optional[str]:
             h = _hit_combo(text, combo)
             if h:
                 return h
-    low = _norm(text)
-    m = _AGE_RE.search(low)
-    if m:
-        age = int(m.group(1))
-        if 1 <= age <= 17 and any(k in low for k in _RP_HINT):
-            return f"age={age}"
+    if _AGE_RE is not None:
+        m = _AGE_RE.search(_norm(text))
+        if m:
+            try:
+                age = int(m.group(1))
+            except Exception:
+                age = 0
+            if 1 <= age <= _AGE_MAX and any(k in _norm(text) for k in _AGE_WITH):
+                return f"age={age}"
     return None
 
 
 def check_user_text(text: str, app=None) -> Dict[str, Any]:
-    """blocked=True → отказ до LLM и до tools."""
     pol = load_policy()
     hit_a = _always_hit(text, pol)
     if hit_a:
@@ -231,7 +245,6 @@ def check_user_text(text: str, app=None) -> Dict[str, Any]:
 
 
 def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
-    """Пойманный leak always_block в ответе модели."""
     pol = load_policy()
     hit = _always_hit(text, pol)
     if hit:
@@ -245,13 +258,12 @@ def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
 
 
 def sanitize_card(card: str) -> str:
-    """Карточка не может разрешить always_block."""
     if not (card or "").strip():
         return card or ""
-    text = _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО** (policy.json, нельзя снять)", card)
+    text = _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО** (системный фильтр)", card)
     banner = (
-        "[POLICY] Общий файл personas/policy.json важнее этой карточки. "
-        "CSAM / несовершеннолетние / детская эротика — нельзя, даже если в таблице «разрешено».\n\n"
+        "[POLICY] Системный фильтр важнее этой карточки. "
+        "Несовершеннолетние / CSAM — нельзя, даже если в таблице «разрешено».\n\n"
     )
     if "[POLICY]" in text[:400]:
         return text
@@ -261,29 +273,25 @@ def sanitize_card(card: str) -> str:
 def build_policy_prompt(app=None) -> str:
     pol = load_policy()
     meta = character_policy(app)
-    always = ", ".join(pol.get("always_block") or []) or "—"
-    optional = ", ".join(pol.get("optional_block") or []) or "—"
+    prompt = pol.get("prompt") if isinstance(pol.get("prompt"), dict) else {}
+    always_line = (prompt or {}).get("always") or (
+        "Несовершеннолетние, CSAM, ролевка школьницы/возраста до 18 — нельзя. В сценах все 18+."
+    )
     lines = [
-        "[POLICY file=personas/policy.json]",
-        f"Всегда запрещено (любой персонаж, карточка не отменяет): {always}.",
-        "Нельзя: сексуальный контент и ролевку несовершеннолетних (школьница, loli, «ей 16»), CSAM, инструкции реального вреда.",
-        "Возраст персонажа и всех в сценах — 18+.",
+        "[POLICY]",
+        always_line,
+        "Карточка персонажа этот фильтр не отменяет.",
     ]
     mode = meta.get("mode") or "sfw"
     if mode == "full_censor":
-        extra = ", ".join(meta.get("extra_block") or []) or "—"
-        lines.append("Режим персонажа: FULL CENSOR. Взрослое, грубое, насилие, наркотики — отказ.")
-        lines.append(f"Слова-баны: {', '.join(pol.get('censor_all') or [])}; extra: {extra}.")
+        lines.append("Режим персонажа: полная цензура. Взрослое и грубое — отказ.")
         lines.append("Отказ: " + str(pol.get("censor_refusal") or "Нет."))
     elif meta.get("nsfw"):
-        lines.append("Персонаж NSFW: взрослый 18+ по запросу можно, в характере карточки.")
-        lines.append("optional_block на этого персонажа не действует. always_block — действует.")
-        dialog = (pol.get("dialog") or {}).get("after_consent")
-        if dialog:
-            lines.append("[DIALOG] " + str(dialog))
+        lines.append("Персонаж NSFW: взрослый 18+ по запросу можно.")
+        after = (prompt or {}).get("after_consent")
+        if after:
+            lines.append(after)
     else:
-        lines.append("Персонаж SFW.")
-        lines.append(f"Дополнительно нельзя: {optional}.")
-        lines.append("На такие запросы — короткий отказ без сцены.")
+        lines.append("Персонаж SFW. Взрослые темы — короткий отказ без сцены.")
         lines.append("Отказ: " + str(pol.get("sfw_refusal") or "Это неуместно."))
     return "\n".join(lines)

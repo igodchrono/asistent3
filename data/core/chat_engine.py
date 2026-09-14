@@ -547,7 +547,7 @@ class ChatEngine:
             if self.app.state.get("character_nsfw") is False:
                 system += "\n\n[POLICY SFW] Отказ на 18+."
             elif self.app.state.get("character_nsfw") is True:
-                system += "\n\n[POLICY NSFW] 18+ по запросу можно. Запреты из policy.json — всегда."
+                system += "\n\n[POLICY NSFW] 18+ по запросу можно. Системный фильтр — всегда."
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         tail = 16
