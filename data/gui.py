@@ -186,6 +186,24 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._append_sys("Ядро запущено. Подключение: " + str(getattr(config, "API_URL", "")))
         self._append_sys("Вложения: кнопка 📎. Картинка в чате — клик = на весь экран.")
 
+    def show_dialog_resume(self, rows, note: str = "") -> None:
+        """Показать хвост сохранённого диалога этого персонажа."""
+        if note:
+            self._append_sys(note)
+        items = list(rows or [])
+        if not items:
+            return
+        shown = items[-8:]
+        if len(items) > len(shown):
+            self._append_sys(f"…ещё {len(items) - len(shown)} реплик в памяти, в контекст уйдёт хвост + дневник прошлых дней")
+        for m in shown:
+            role = str((m.get("role") if isinstance(m, dict) else "") or "")
+            text = str((m.get("content") if isinstance(m, dict) else m) or "")
+            if not text.strip():
+                continue
+            who = "Вы" if role == "user" else "Ассистент"
+            self._append(who, text[:2000])
+
     def attachments_dir(self) -> Path:
         day = attachments_root() / datetime.now().strftime("%Y-%m-%d")
         day.mkdir(parents=True, exist_ok=True)

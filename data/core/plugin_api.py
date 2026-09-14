@@ -153,7 +153,7 @@ class AppContext:
             if engine is None:
                 engine = self.state.get('engine')
 
-            # очистить историю движка, чтобы не смешивать контексты
+            # очистить RAM-историю и подгрузить хвост ЭТОГО персонажа из sqlite
             if engine is not None and hasattr(engine, 'history'):
                 try:
                     engine.history.clear()
@@ -162,6 +162,22 @@ class AppContext:
                         engine.history = []
                     except Exception:
                         pass
+            mem = self.plugins.get("memory") if getattr(self, "plugins", None) else None
+            loaded = []
+            if mem is not None and hasattr(mem, "hydrate_engine") and engine is not None:
+                try:
+                    loaded = mem.hydrate_engine(engine) or []
+                except Exception as e:
+                    print(f"memory hydrate: {e}", flush=True)
+            gui = win or getattr(self, "gui", None) or self.state.get("gui")
+            if gui is not None and hasattr(gui, "show_dialog_resume"):
+                try:
+                    gui.show_dialog_resume(
+                        loaded,
+                        f"Персонаж: {prev} → {character_id}. Продолжаю её диалог.",
+                    )
+                except Exception:
+                    pass
 
             # сбросить кэши карточек персонажей в модулях character_manager / character_catalog, если есть
             try:

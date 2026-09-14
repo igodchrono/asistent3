@@ -117,6 +117,24 @@ def main() -> None:
         splash.say("окно", 90)
     win = ChatWindow(engine, loader)
     ctx.window = win
+    ctx.state["engine"] = engine
+    try:
+        mem = ctx.plugins.get("memory")
+        if mem is not None and hasattr(mem, "hydrate_engine"):
+            rows = mem.hydrate_engine(engine) or []
+            n = len(rows)
+            note = "Новый диалог." if not n else f"Продолжаю диалог «{getattr(config, 'ACTIVE_CHARACTER', '')}»: {n} реплик в рабочем окне."
+            win.show_dialog_resume(rows, note)
+    except Exception as e:
+        print(f"memory boot: {e}", flush=True)
+
+    async def _boot_diary():
+        try:
+            mem = ctx.plugins.get("memory")
+            if mem is not None and hasattr(mem, "maybe_summarize"):
+                await mem.maybe_summarize(engine.llm)
+        except Exception as e:
+            print(f"memory boot diary: {e}", flush=True)
 
     if splash:
         splash.finish(win)
@@ -128,6 +146,7 @@ def main() -> None:
 
     with loop:
         loop.create_task(_ping())
+        loop.create_task(_boot_diary())
         loop.run_forever()
 
 

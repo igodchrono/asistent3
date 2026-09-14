@@ -76,6 +76,11 @@ class ChatEngine:
         self.history: List[Dict[str, str]] = []
         self.system_prompt = getattr(app.config, "SYSTEM_PROMPT", "") or "Ты полезный ассистент."
         app.state.setdefault("context", {})
+        app.state["engine"] = self
+        try:
+            app.engine = self
+        except Exception:
+            pass
 
     def _ctx(self) -> Dict[str, Any]:
         st = self.app.state
@@ -258,6 +263,43 @@ class ChatEngine:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_TOOL_POOL, self._run_tool, intent, args)
 
+    def _memory_plugin(self):
+        try:
+            return (self.app.plugins or {}).get("memory")
+        except Exception:
+            return None
+
+    def _remember(self, role: str, content: str) -> None:
+        mem = self._memory_plugin()
+        if mem is None or not hasattr(mem, "record"):
+            return
+        try:
+            mem.record(role, content)
+        except Exception as e:
+            print(f"memory record: {e}", flush=True)
+
+    def _trim_history(self) -> None:
+        n = 16
+        mem = self._memory_plugin()
+        if mem is not None and hasattr(mem, "_tail_n"):
+            try:
+                n = int(mem._tail_n(self.app) or 16)
+            except Exception:
+                n = 16
+        if len(self.history) > n:
+            self.history = self.history[-n:]
+
+    def _schedule_summary(self) -> None:
+        mem = self._memory_plugin()
+        if mem is None or not hasattr(mem, "maybe_summarize"):
+            return
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            loop.create_task(mem.maybe_summarize(self.llm))
+        except Exception:
+            pass
+
     async def _refine_search_args(self, user_text: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Вытащить нормальный поисковый запрос из фразы пользователя."""
         args = dict(args or {})
@@ -338,6 +380,8 @@ class ChatEngine:
         if not text:
             return
         self.history.append({"role": "user", "content": text})
+        self._remember("user", text)
+        self._trim_history()
         import time as _time
         self.app.state["last_user_activity"] = _time.time()
         self.app.state["last_chat_activity"] = _time.time()
@@ -354,6 +398,9 @@ class ChatEngine:
             if isinstance(hr, HookResult) and hr.handled:
                 reply = self._strip_anim_for_chat(hr.reply or "")
                 self.history.append({"role": "assistant", "content": reply})
+                self._remember("assistant", reply)
+                self._trim_history()
+                self._schedule_summary()
                 if reply:
                     yield reply
                 return
@@ -416,6 +463,9 @@ class ChatEngine:
                     except Exception as e:
                         print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
                 self.history.append({"role": "assistant", "content": reply})
+                self._remember("assistant", reply)
+                self._trim_history()
+                self._schedule_summary()
                 if reply:
                     yield reply
                 return
@@ -498,3 +548,6 @@ class ChatEngine:
             self.history[-1]["content"] = reply
         else:
             self.history.append({"role": "assistant", "content": reply})
+        self._remember("assistant", reply)
+        self._trim_history()
+        self._schedule_summary()

@@ -2,6 +2,8 @@
 """Memory tools + вкладка настроек: список фактов, удаление."""
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,19 +28,22 @@ except Exception:
 class PluginImpl(Plugin):
     id = "memory"
     name = "Память персонажа"
-    version = "2.1.0"
-    description = "Долговременная память (tools + UI списка)."
+    version = "3.0.0"
+    description = "Диалог + дневник + факты (по персонажу, переживает рестарт)."
     settings_tab = "own"
     settings_tab_title = "Память"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
-        SettingField("max_inject", "Фактов в prompt", "int", 12, min_value=1, max_value=50),
+        SettingField("max_inject", "Фактов в prompt", "int", 8, min_value=1, max_value=30),
+        SettingField("history_tail", "Реплик в рабочем окне", "int", 16, min_value=6, max_value=40),
+        SettingField("diary_days", "Дней дневника в prompt", "int", 7, min_value=1, max_value=30),
     ]
 
     def __init__(self) -> None:
         self.store = None
         self.app = None
         self._ui = {}  # widgets for settings tab
+        self._sum_busy = False
 
     def on_load(self, app: AppContext) -> None:
         self.app = app
@@ -76,10 +81,128 @@ class PluginImpl(Plugin):
             char_dir.mkdir(parents=True, exist_ok=True)
             self.store = MemoryStore(char_dir, character_id=str(cid))
             n = self.store.count() if hasattr(self.store, "count") else "?"
-            print(f"🧠 memory: {cid} → {self.store.db_path} (n={n})", flush=True)
+            nm = self.store.message_count() if hasattr(self.store, "message_count") else "?"
+            print(f"🧠 memory: {cid} → {self.store.db_path} (facts={n} msgs={nm})", flush=True)
         except Exception as e:
             print(f"memory: open failed: {e}", flush=True)
             self.store = None
+
+    def _tail_n(self, app: Optional[AppContext] = None) -> int:
+        app = app or self.app
+        if app is None:
+            return 16
+        try:
+            return int(app.get_plugin_setting(self.id, "history_tail", 16) or 16)
+        except Exception:
+            return 16
+
+    def record(self, role: str, content: str) -> None:
+        if self.store is None:
+            return
+        try:
+            self.store.append_message(role, content)
+        except Exception as e:
+            print(f"memory record: {e}", flush=True)
+
+    def hydrate_engine(self, engine) -> List[Dict[str, Any]]:
+        if self.store is None or engine is None:
+            return []
+        try:
+            rows = self.store.recent_messages(limit=self._tail_n())
+        except Exception as e:
+            print(f"memory hydrate: {e}", flush=True)
+            return []
+        engine.history = [{"role": str(r.get("role") or "user"), "content": str(r.get("content") or "")} for r in rows]
+        return rows
+
+    async def maybe_summarize(self, llm) -> None:
+        if self._sum_busy or self.store is None or llm is None:
+            return
+        try:
+            groups = self.store.pending_summary_groups(tail=self._tail_n())
+        except Exception as e:
+            print(f"memory pending: {e}", flush=True)
+            return
+        if not groups:
+            return
+        self._sum_busy = True
+        try:
+            for g in groups:
+                await self._summarize_group(llm, g)
+        except Exception as e:
+            print(f"memory summarize: {e}", flush=True)
+        finally:
+            self._sum_busy = False
+
+    async def _summarize_group(self, llm, group: Dict[str, Any]) -> None:
+        day = str(group.get("day") or "")
+        msgs: List[Dict[str, Any]] = list(group.get("messages") or [])
+        if not day or not msgs:
+            return
+        prev = self.store.get_summary(day) if self.store else None
+        old = ((prev or {}).get("text") or "").strip()
+        lines = []
+        for m in msgs[-40:]:
+            who = "Пользователь" if m.get("role") == "user" else "Персонаж"
+            body = re.sub(r"\s+", " ", str(m.get("content") or "")).strip()[:400]
+            if body:
+                lines.append(f"{who}: {body}")
+        if not lines:
+            return
+        prompt = (
+            "Собери дневник дня для персонажа. Ответь ТОЛЬКО JSON без markdown:\n"
+            '{"diary":"5-8 предложений: о чём говорили, имена, договорённости, настроение, открытые темы",'
+            '"facts":[{"category":"profile|preference|fact|relation|open_loop","key":"user.name","content":"...","importance":0.8}]}\n'
+            "Правила: не выдумывай; facts — только устойчивое о пользователе/мире, не пересказ всего дня; "
+            "если новых фактов нет — facts=[]. "
+            "diary на русском, от третьего лица.\n"
+        )
+        if old:
+            prompt += f"\nУже записано про этот день (дополни/сожми, не потеряй важное):\n{old}\n"
+        prompt += "\nРеплики:\n" + "\n".join(lines)
+        raw = await llm.chat_once(
+            [
+                {"role": "system", "content": "Ты архивариус памяти персонажа. Только JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=400,
+        )
+        data: Dict[str, Any] = {}
+        m = re.search(r"\{[\s\S]*\}", raw or "")
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+                if isinstance(parsed, dict):
+                    data = parsed
+            except Exception:
+                data = {}
+        diary = str(data.get("diary") or "").strip()
+        if not diary:
+            diary = (raw or "").strip()[:2000]
+        if not diary:
+            return
+        self.store.upsert_summary(day, diary, int(msgs[0]["id"]), int(msgs[-1]["id"]))
+        facts = data.get("facts") if isinstance(data.get("facts"), list) else []
+        allowed = {"profile", "preference", "fact", "relation", "open_loop"}
+        n = 0
+        for f in facts:
+            if not isinstance(f, dict) or n >= 5:
+                continue
+            content = str(f.get("content") or "").strip()
+            if len(content) < 3:
+                continue
+            cat = str(f.get("category") or "fact").strip() or "fact"
+            if cat not in allowed:
+                cat = "fact"
+            key = str(f.get("key") or "").strip() or None
+            try:
+                imp = float(f.get("importance") or 0.6)
+            except Exception:
+                imp = 0.6
+            self.store.add(content, category=cat, key=key, importance=min(1.0, max(0.3, imp)))
+            n += 1
+        print(f"memory diary {self.store.character_id} {day}: {len(diary)} chars facts+={n}", flush=True)
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["memory_add"] = self.tool_add
@@ -177,18 +300,29 @@ class PluginImpl(Plugin):
             self._open_store(app)
         if self.store is None:
             return messages
+        q = ""
+        for m in reversed(messages or []):
+            if m.get("role") == "user":
+                q = str(m.get("content") or "")
+                break
         try:
-            items = self.store.list_all(limit=int(app.get_plugin_setting(self.id, "max_inject", 12) or 12))
+            n = int(app.get_plugin_setting(self.id, "max_inject", 8) or 8)
+            items = self.store.recall_for_prompt(q, limit=n)
+            facts = self.store.format_for_prompt(items, max_chars=1600)
         except Exception:
-            try:
-                self._open_store(app)
-                items = self.store.list_all(limit=12)
-            except Exception:
-                return messages
-        if not items:
+            facts = ""
+        try:
+            days = int(app.get_plugin_setting(self.id, "diary_days", 7) or 7)
+            diary = self.store.format_diary(limit_days=days, max_chars=2200)
+        except Exception:
+            diary = ""
+        inj = ""
+        if facts:
+            inj += "\n\n[ПАМЯТЬ ПЕРСОНАЖА]\n" + facts
+        if diary:
+            inj += "\n\n" + diary
+        if not inj:
             return messages
-        block = "\n".join(f"- {it.get('content') or it.get('text')}" for it in items)
-        inj = f"\n\n[ПАМЯТЬ ПЕРСОНАЖА]\n{block}\n"
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = str(messages[0].get("content") or "") + inj
         return messages

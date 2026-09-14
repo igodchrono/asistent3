@@ -59,6 +59,7 @@ class CharacterMemoryStore:
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_key ON memories(key)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_pin ON memories(pinned)")
         self._conn.commit()
+        self._init_dialog_schema()
 
     def close(self) -> None:
         try:
@@ -287,6 +288,188 @@ class CharacterMemoryStore:
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()
         return int(row["c"] if row else 0)
+
+    # ---- диалог / дневник (тот же sqlite, этот персонаж) ----
+
+    def _init_dialog_schema(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at REAL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL UNIQUE,
+                text TEXT NOT NULL,
+                from_id INTEGER,
+                to_id INTEGER,
+                created_at REAL,
+                updated_at REAL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_time ON messages(created_at)")
+        self._conn.commit()
+
+    @staticmethod
+    def day_of(ts: Optional[float] = None) -> str:
+        from datetime import datetime
+        return datetime.fromtimestamp(float(ts if ts is not None else time.time())).strftime("%Y-%m-%d")
+
+    def get_meta(self, key: str, default: str = "") -> str:
+        row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return str(row["value"]) if row and row["value"] is not None else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
+        self._conn.commit()
+
+    def append_message(self, role: str, content: str) -> int:
+        role = "assistant" if str(role) == "assistant" else "user"
+        text = (content or "").strip()
+        if not text:
+            return -1
+        if len(text) > 8000:
+            text = text[:8000] + "…"
+        cur = self._conn.execute(
+            "INSERT INTO messages(role, content, created_at) VALUES(?,?,?)",
+            (role, text, time.time()),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    def message_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()
+        return int(row["c"] if row else 0)
+
+    def last_message_id(self) -> int:
+        row = self._conn.execute("SELECT MAX(id) AS m FROM messages").fetchone()
+        return int(row["m"] or 0)
+
+    def recent_messages(self, limit: int = 16) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT id, role, content, created_at FROM messages
+            ORDER BY id DESC LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        out.reverse()
+        return out
+
+    def messages_between(self, after_id: int, before_id: int, limit: int = 80) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT id, role, content, created_at FROM messages
+            WHERE id > ? AND id < ?
+            ORDER BY id ASC LIMIT ?
+            """,
+            (int(after_id), int(before_id), max(1, int(limit))),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def pending_summary_groups(self, tail: int = 16, min_today: int = 6) -> List[Dict[str, Any]]:
+        """Сообщения старше хвоста, ещё не вошедшие в дневник, группами по дню."""
+        tail_rows = self.recent_messages(limit=tail)
+        if not tail_rows:
+            return []
+        covered = int(self.get_meta("summarized_upto") or 0)
+        tail_min = int(tail_rows[0]["id"])
+        if tail_min <= covered + 1:
+            return []
+        old = self.messages_between(covered, tail_min, limit=120)
+        if not old:
+            return []
+        today = self.day_of()
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        order: List[str] = []
+        for m in old:
+            day = self.day_of(m.get("created_at"))
+            if day not in groups:
+                groups[day] = []
+                order.append(day)
+            groups[day].append(m)
+        out: List[Dict[str, Any]] = []
+        for day in order:
+            msgs = groups[day]
+            if day < today or len(msgs) >= int(min_today):
+                out.append({"day": day, "messages": msgs})
+        return out
+
+    def get_summary(self, day: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute("SELECT * FROM summaries WHERE day=?", (day,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_summary(self, day: str, text: str, from_id: int, to_id: int) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        now = time.time()
+        self._conn.execute(
+            """
+            INSERT INTO summaries(day, text, from_id, to_id, created_at, updated_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(day) DO UPDATE SET
+                text=excluded.text,
+                from_id=excluded.from_id,
+                to_id=excluded.to_id,
+                updated_at=excluded.updated_at
+            """,
+            (day, text[:4000], int(from_id), int(to_id), now, now),
+        )
+        prev = int(self.get_meta("summarized_upto") or 0)
+        if int(to_id) > prev:
+            self.set_meta("summarized_upto", str(int(to_id)))
+        else:
+            self._conn.commit()
+
+    def recent_summaries(self, limit: int = 7) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT day, text, from_id, to_id, updated_at FROM summaries
+            ORDER BY day DESC LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        out.reverse()
+        return out
+
+    def format_diary(self, limit_days: int = 7, max_chars: int = 2200) -> str:
+        items = self.recent_summaries(limit=limit_days)
+        if not items:
+            return ""
+        lines = [
+            "[ДНЕВНИК ДИАЛОГА этого персонажа — помни и ссылайся, если спрашивают про вчера/раньше]",
+            "Не говори «я не помню», если день есть ниже.",
+        ]
+        used = 0
+        for it in items:
+            block = f"{it.get('day')}: {(it.get('text') or '').strip()}"
+            if used + len(block) > max_chars:
+                break
+            lines.append(block)
+            used += len(block)
+        return "\n".join(lines) if len(lines) > 2 else ""
 
 # alias for plugins
 MemoryStore = CharacterMemoryStore
