@@ -263,6 +263,19 @@ class ChatEngine:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_TOOL_POOL, self._run_tool, intent, args)
 
+    def _active_plugins(self):
+        if hasattr(self.app, "iter_plugins"):
+            plugs = list(self.app.iter_plugins())
+        else:
+            plugs = list((self.app.plugins or {}).values())
+        out = []
+        for pl in plugs:
+            pid = getattr(pl, "id", "") or ""
+            if pid and hasattr(self.app, "is_plugin_enabled") and not self.app.is_plugin_enabled(pid):
+                continue
+            out.append(pl)
+        return out
+
     def _memory_plugin(self):
         try:
             return (self.app.plugins or {}).get("memory")
@@ -388,7 +401,7 @@ class ChatEngine:
         self.app.state["last_user_text"] = text
 
         # 1) редкие sync-перехваты (голос, подтверждения pc) — если плагин сам handled
-        plugs = list(self.app.iter_plugins()) if hasattr(self.app, "iter_plugins") else list(self.app.plugins.values())
+        plugs = self._active_plugins()
         for pl in plugs:
             try:
                 hr = pl.on_user_message(text, self.app)
@@ -517,7 +530,14 @@ class ChatEngine:
                 system += "\n\n[POLICY NSFW] 18+ по запросу можно. Запреты из policy.json — всегда."
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
-        for m in self.history[-16:]:
+        tail = 16
+        mem = self._memory_plugin()
+        if mem is not None and hasattr(mem, "_tail_n"):
+            try:
+                tail = int(mem._tail_n(self.app) or 16)
+            except Exception:
+                tail = 16
+        for m in self.history[-tail:]:
             messages.append({"role": m["role"], "content": m["content"]})
 
         for pl in plugs:

@@ -28,7 +28,7 @@ _BLOCK = (
 _ASK = (
     "сгенерируй", "нарисуй", "сделай картин", "сделай изображ",
     "сгенери изображение", "сгенерируй изображение", "сгенерируй картин",
-    "пришли фот", "скинь фот", "пришли фото", "нарисуй мне",
+    "нарисуй мне",
 )
 _ALIASES = {
     "qwen": "workflows/qwen_image.json",
@@ -129,9 +129,13 @@ class PluginImpl(Plugin):
         if not low:
             return None
         stage = str(app.state.get("imggen_stage") or "idle")
+        age = time.time() - float(app.state.get("imggen_at") or 0)
+        if stage != "idle" and age > 600:
+            app.state["imggen_stage"] = "idle"
+            stage = "idle"
 
         if stage == "drafting":
-            return HookResult(True, "ещё собираю промпт через модель, секунду…")
+            return None
         if stage == "confirm":
             return self._handle_confirm(app, text, low)
         if stage == "busy":
@@ -145,6 +149,7 @@ class PluginImpl(Plugin):
             app.state["imggen_request"] = text
             app.state["imggen_refs"] = refs
             app.state["imggen_stage"] = "drafting"
+            app.state["imggen_at"] = time.time()
             self._schedule_card(app, text, refs)
             return HookResult(True, "собираю промпты через модель — напиши, как появятся: «давай qwen» / sdxl / z.")
         return None
@@ -168,6 +173,7 @@ class PluginImpl(Plugin):
             else:
                 if app.state.get("imggen_stage") == "drafting":
                     app.state["imggen_stage"] = "confirm"
+                    app.state["imggen_at"] = time.time()
             self._notify(app, card, None)
 
         try:
@@ -226,12 +232,7 @@ class PluginImpl(Plugin):
             self._start(app, prompt, path, refs)
             extra = f", референс: {Path(refs[0]).name}" if refs else ""
             return HookResult(True, f"запустила {path.stem}{extra}. это минуты, пиши пока — пришлю, как будет.")
-        # treat as prompt edit via LLM
-        refs = list(app.state.get("imggen_refs") or [])
-        req = str(app.state.get("imggen_request") or "") + " | правка: " + text
-        app.state["imggen_stage"] = "drafting"
-        self._schedule_card(app, req, refs)
-        return HookResult(True, "обновляю промпт через модель…")
+        return None
 
     def _ask_card(self, app, prompt: str, refs: List[str]) -> str:
         if app.state.get("imggen_prompt_qwen"):
@@ -307,14 +308,16 @@ class PluginImpl(Plugin):
     def _char_look(self, app) -> str:
         name = ""
         try:
-            name = str(getattr(app, "active_character", None) or app.state.get("active_character") or "")
+            if hasattr(app, "get_active_character"):
+                name = str(app.get_active_character() or "")
+            if not name:
+                name = str(getattr(app.config, "ACTIVE_CHARACTER", "") or "")
         except Exception:
             name = ""
         look = ""
         try:
-            card = Path(__file__).resolve().parents[2] / "personas" / "characters" / name / "card.md"
-            if card.exists():
-                look = card.read_text(encoding="utf-8", errors="ignore")[:800]
+            from character_catalog import read_character_card
+            look = (read_character_card(name) or "")[:800]
         except Exception:
             look = ""
         return name or "персонаж", look or self._look_qwen()
@@ -491,7 +494,17 @@ class PluginImpl(Plugin):
         return out
 
     def _base(self, app) -> str:
-        return str(app.get_plugin_setting(self.id, "comfy_url", "http://127.0.0.1:8188") or "").rstrip("/")
+        raw = str(app.get_plugin_setting(self.id, "comfy_url", "http://127.0.0.1:8188") or "").rstrip("/")
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(raw)
+            host = (u.hostname or "").lower()
+            if u.scheme != "http" or host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"imggen: comfy_url не loopback ({raw!r})", flush=True)
+                return ""
+        except Exception:
+            return ""
+        return raw
 
     def _start(self, app, prompt, wf_path: Path, refs: List[str]):
         def work():
@@ -510,19 +523,29 @@ class PluginImpl(Plugin):
 
     def _notify(self, app, msg, path):
         def ui():
-            gui = app.state.get("gui") or getattr(app, "gui", None)
-            files = [Path(path)] if path and Path(str(path)).exists() else []
+            gui = getattr(app, "window", None) or app.state.get("gui")
+            text = msg or ""
+            if path and Path(str(path)).exists():
+                text = text + f"\n[фото: {path}]"
+            if gui and hasattr(gui, "publish_assistant_message"):
+                gui.publish_assistant_message(text)
+                return
             if gui and hasattr(gui, "_append"):
-                try:
-                    gui._append("Ассистент", msg, files=files)
-                    return
-                except TypeError:
-                    gui._append("Ассистент", msg + (f"\n[фото: {path}]" if files else ""))
+                gui._append("Ассистент", text)
+        win = getattr(app, "window", None) or app.state.get("gui")
+        if win is not None and hasattr(win, "post"):
+            win.post(ui)
+            return
         try:
-            from PyQt5 import QtCore
-            QtCore.QTimer.singleShot(0, ui)
+            from PyQt5.QtWidgets import QApplication
+            from PyQt5.QtCore import QThread
+            appq = QApplication.instance()
+            if appq is None or QThread.currentThread() is appq.thread():
+                ui()
+                return
         except Exception:
-            ui()
+            pass
+        ui()
 
     def _inbox(self) -> Path:
         return self._out_dir(self.app)
@@ -530,7 +553,10 @@ class PluginImpl(Plugin):
     def _out_dir(self, app) -> Path:
         name = "default"
         try:
-            name = str(getattr(app, "active_character", None) or app.state.get("active_character") or "default")
+            if hasattr(app, "get_active_character"):
+                name = str(app.get_active_character() or "default")
+            if not name:
+                name = str(getattr(app.config, "ACTIVE_CHARACTER", "default") or "default")
         except Exception:
             pass
         # data/generated/<character>/
@@ -633,6 +659,9 @@ class PluginImpl(Plugin):
 
     def tool_generate(self, app, prompt="", workflow="", refs=None, **kw):
         refs = refs or []
+        base = self._base(app)
+        if not base:
+            return "ComfyUI только на localhost (127.0.0.1 / ::1). Проверь URL в настройках."
         path = Path(workflow) if workflow else self._resolve_wf(str(app.get_plugin_setting(self.id, "default_workflow", "qwen")))
         print(f"imggen: wf={path} prompt={prompt[:140]!r} refs={refs}", flush=True)
         try:
@@ -640,7 +669,7 @@ class PluginImpl(Plugin):
         except Exception as e:
             return f"не прочитан workflow: {e}"
         try:
-            queued = self._post(self._base(app) + "/prompt", {"prompt": graph})
+            queued = self._post(base + "/prompt", {"prompt": graph})
         except Exception as e:
             return f"ComfyUI /prompt: {e}"
         print(f"imggen: queue {queued}", flush=True)

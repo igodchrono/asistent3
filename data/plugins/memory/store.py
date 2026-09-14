@@ -21,6 +21,44 @@ _SIM_FACT = 0.62
 _SIM_LINE = 0.75
 
 
+class _LockedConn:
+    """Один sqlite-коннект + lock: execute сразу материализует курсор."""
+
+    def __init__(self, conn: sqlite3.Connection, lock):
+        self._conn = conn
+        self._lock = lock
+        self.row_factory = conn.row_factory
+
+    def execute(self, *a, **k):
+        with self._lock:
+            cur = self._conn.execute(*a, **k)
+            try:
+                rows = cur.fetchall()
+            except Exception:
+                rows = []
+            return _Snap(rows, cur.lastrowid)
+
+    def commit(self):
+        with self._lock:
+            return self._conn.commit()
+
+    def close(self):
+        with self._lock:
+            return self._conn.close()
+
+
+class _Snap:
+    def __init__(self, rows, lastrowid):
+        self._rows = list(rows or [])
+        self.lastrowid = lastrowid
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
 class CharacterMemoryStore:
     def __init__(self, character_dir: Path, character_id: str = ""):
         self.character_id = (character_id or Path(character_dir).name).strip() or "default"
@@ -29,8 +67,10 @@ class CharacterMemoryStore:
         self.mem_dir = self.character_dir / "memory"
         self.mem_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.mem_dir / "memory.db"
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        raw = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+        raw.row_factory = sqlite3.Row
+        self._lock = __import__("threading").RLock()
+        self._conn = _LockedConn(raw, self._lock)
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")

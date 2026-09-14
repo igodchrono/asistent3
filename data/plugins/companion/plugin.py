@@ -364,20 +364,12 @@ class PluginImpl(Plugin):
         return random.choice(opts)
 
     def _publish(self, app: AppContext, text: str) -> None:
-        window = getattr(app, "window", None)
-        if window is None:
+        window = getattr(app, "window", None) or app.state.get("gui")
+        if window is None or not text:
             return
         try:
-            # типичный UI: append_assistant / add_message
-            for name in ("append_assistant_message", "add_assistant_message", "show_assistant"):
-                fn = getattr(window, name, None)
-                if callable(fn):
-                    fn(text)
-                    return
-            # chat widget
-            chat = getattr(window, "chat", None) or getattr(window, "chat_view", None)
-            if chat and hasattr(chat, "append"):
-                chat.append(f"<b>Ассистент:</b> {text}")
+            if hasattr(window, "publish_assistant_message"):
+                window.publish_assistant_message(text)
                 return
         except Exception as e:
             print(f"companion: publish {e}", flush=True)

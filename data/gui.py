@@ -36,6 +36,25 @@ def _strip_anim(text: str) -> str:
     return " ".join(t.split())
 
 
+class _GuiBridge(QtCore.QObject):
+    """Вызов с любого потока в GUI (сигнал, не QTimer из python-thread)."""
+    _run = QtCore.pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._run.connect(self._exec, QtCore.Qt.QueuedConnection)
+
+    @QtCore.pyqtSlot(object)
+    def _exec(self, fn) -> None:
+        try:
+            fn()
+        except Exception as e:
+            print(f"gui bridge: {e}", flush=True)
+
+    def post(self, fn) -> None:
+        self._run.emit(fn)
+
+
 def attachments_root() -> Path:
     root = Path(__file__).resolve().parent / "attachments"
     root.mkdir(parents=True, exist_ok=True)
@@ -113,6 +132,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.loader = loader
         self._busy = False
         self._pending: list[Path] = []
+        self._bridge = _GuiBridge(self)
         self.setWindowTitle(getattr(config, "WINDOW_TITLE", "Лисичка — ядро"))
         self.resize(int(getattr(config, "WINDOW_WIDTH", 780)), int(getattr(config, "WINDOW_HEIGHT", 700)))
         self.setStyleSheet(WINDOW_QSS)
@@ -295,22 +315,44 @@ class ChatWindow(QtWidgets.QMainWindow):
             f'<div style="margin:8px 0 12px 0;"><b style="color:{color};">{html.escape(who)}</b><br>{body}{extra}</div>'
         )
 
-    def publish_assistant_message(self, text: str) -> None:
-        text = (text or "").strip()
-        if not text:
-            return
-        self._append("Ассистент", text)
+    def post(self, fn) -> None:
         try:
-            eng = self.engine
-            if eng is not None:
-                if hasattr(eng, "history"):
-                    eng.history.append({"role": "assistant", "content": text})
-                    if hasattr(eng, "_trim_history"):
-                        eng._trim_history()
-                if hasattr(eng, "_remember"):
-                    eng._remember("assistant", text)
+            app = QtWidgets.QApplication.instance()
+            if app is not None and QtCore.QThread.currentThread() is app.thread():
+                fn()
+                return
         except Exception:
             pass
+        getattr(self, "_bridge").post(fn)
+
+    @QtCore.pyqtSlot(str)
+    def publish_assistant_message(self, text: str) -> None:
+        def _go():
+            t = (text or "").strip()
+            if not t:
+                return
+            self._append("Ассистент", t)
+            try:
+                eng = self.engine
+                if eng is not None:
+                    if hasattr(eng, "history"):
+                        eng.history.append({"role": "assistant", "content": t})
+                        if hasattr(eng, "_trim_history"):
+                            eng._trim_history()
+                    if hasattr(eng, "_remember"):
+                        eng._remember("assistant", t)
+            except Exception:
+                pass
+        self.post(_go)
+
+    @QtCore.pyqtSlot(str)
+    def submit_text(self, text: str) -> None:
+        def _go():
+            t = (text or "").strip()
+            if t and not self._busy:
+                self.input.setText(t)
+                self._on_send()
+        self.post(_go)
 
     def _begin_assistant_stream(self) -> None:
         self._stream_raw = ""
@@ -323,8 +365,11 @@ class ChatWindow(QtWidgets.QMainWindow):
         if not chunk:
             return
         self._stream_raw = getattr(self, "_stream_raw", "") + chunk
+        vis = _ANIM_RE.sub("", chunk)
+        if not vis:
+            return
         self.chat.moveCursor(QtGui.QTextCursor.End)
-        self.chat.insertHtml(self._html_text(chunk))
+        self.chat.insertHtml(self._html_text(vis))
         self.chat.moveCursor(QtGui.QTextCursor.End)
         bar = self.chat.verticalScrollBar()
         bar.setValue(bar.maximum())
@@ -341,12 +386,6 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.chat.insertHtml(extra)
         self.chat.insertHtml("</div>")
         self.chat.moveCursor(QtGui.QTextCursor.End)
-
-    def submit_text(self, text: str) -> None:
-        text = (text or "").strip()
-        if text and not self._busy:
-            self.input.setText(text)
-            self._on_send()
 
     def _voice_plugin(self):
         return self.engine.app.plugins.get("voice") or self.engine.app.state.get("voice_plugin")

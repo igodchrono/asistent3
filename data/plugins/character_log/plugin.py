@@ -24,11 +24,10 @@ class PluginImpl(Plugin):
         print(f"character_log: HOOK {previous_id} → {character_id} path={path}", flush=True)
         # nsfw flag from card
         try:
-            from character_catalog import read_character_card
-            card = (read_character_card(str(character_id)) or "").lower()
-            app.state["character_nsfw"] = any(x in card for x in ("nsfw", "18+", "эрот"))
+            from core.policy import character_is_nsfw
+            app.state["character_nsfw"] = bool(character_is_nsfw(app))
         except Exception:
-            pass
+            app.state["character_nsfw"] = False
 
 def register():
     return PluginImpl()

@@ -29,7 +29,7 @@ class PluginImpl(Plugin):
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
         if not app.get_plugin_setting(self.id, "enabled", True):
             return messages
-        files = app.state.get("pending_attachments") or app.state.get("last_attachments") or []
+        files = list(app.state.get("pending_attachments") or [])
         if not files or not messages:
             return messages
         chunks = []
@@ -55,6 +55,7 @@ class PluginImpl(Plugin):
         block = "\n\n[ВЛОЖЕНИЯ ДЛЯ АНАЛИЗА]\n" + "\n".join(chunks) + "\nОпиши/разбери то, что во вложениях, если пользователь об этом просит.\n"
         if messages[0].get("role") == "system":
             messages[0]["content"] = str(messages[0].get("content") or "") + block
+        app.state["pending_attachments"] = []
         return messages
 
 

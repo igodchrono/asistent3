@@ -42,25 +42,35 @@ def character_is_nsfw(app) -> bool:
     if app is None:
         return False
     st = getattr(app, "state", {}) or {}
-    if "character_nsfw" in st:
-        return bool(st.get("character_nsfw"))
     if st.get("content_policy") == "full_censor":
+        st["character_nsfw"] = False
         return False
+    nsfw = False
     try:
         cid = ""
         if hasattr(app, "get_active_character"):
             cid = str(app.get_active_character() or "")
         if not cid:
-            cid = str(getattr(app.config, "ACTIVE_CHARACTER", "") or "")
+            cid = str(getattr(getattr(app, "config", None), "ACTIVE_CHARACTER", "") or "")
         from character_catalog import read_character_card
         card = (read_character_card(cid) or "").lower()
-        nsfw = any(x in card for x in ("nsfw: yes", "nsfw:yes", "nsfw: true", "18+", "uncensored"))
-        if "nsfw: no" in card or "nsfw:no" in card or "full_censor" in card:
+        if any(
+            x in card
+            for x in (
+                "nsfw: no", "nsfw:no", "nsfw: false", "nsfw:false",
+                "full_censor", "полный запрет nsfw", "запрет nsfw",
+            )
+        ):
             nsfw = False
-        st["character_nsfw"] = nsfw
-        return nsfw
+        elif any(
+            x in card
+            for x in ("nsfw: yes", "nsfw:yes", "nsfw: true", "nsfw:true", "nsfw: 18")
+        ):
+            nsfw = True
     except Exception:
-        return False
+        nsfw = False
+    st["character_nsfw"] = nsfw
+    return nsfw
 
 
 def _hit(text: str, words: List[str]) -> Optional[str]:

@@ -325,7 +325,16 @@ class PluginImpl(Plugin):
         window = getattr(self.app, "window", None) if self.app else None
         if window is not None and hasattr(window, "submit_text"):
             print(f"voice → chat: {text}", flush=True)
-            window.submit_text(text)
+            try:
+                from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    window, "submit_text", Qt.QueuedConnection, Q_ARG(str, text)
+                )
+            except Exception:
+                if hasattr(window, "post"):
+                    window.post(lambda t=text: window.submit_text(t))
+                else:
+                    window.submit_text(text)
 
     def _speak_worker(self, text: str, gen: int) -> None:
         if self._speak_stop.is_set() or gen != self._speak_gen:

@@ -281,6 +281,8 @@ class PluginImpl(Plugin):
             return f"Ошибка удаления: {e}"
 
     def on_user_message(self, text: str, app: AppContext):
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return None
         low = (text or "").strip().lower()
         if low.startswith("запомни:") or low.startswith("запомни "):
             body = text.split(":", 1)[-1].strip() if ":" in text else text.split(" ", 1)[-1]
@@ -471,6 +473,15 @@ class PluginImpl(Plugin):
         return out
 
     def _refresh_list_ui(self) -> None:
+        def go():
+            self._refresh_list_ui_now()
+        win = getattr(self.app, "window", None) if self.app else None
+        if win is not None and hasattr(win, "post"):
+            win.post(go)
+        else:
+            go()
+
+    def _refresh_list_ui_now(self) -> None:
         lst = self._ui.get("list")
         if lst is None:
             return

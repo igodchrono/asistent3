@@ -38,15 +38,27 @@ class PluginImpl(Plugin):
             root = Path(getattr(app.config, "DATA_DIR", Path("data"))) / "personas" / "characters" / str(cid)
             if not root.is_dir():
                 return
+            skip_files = set(_SKIP_NAMES)
+            try:
+                from character_catalog import character_card_path
+                cp = character_card_path(str(cid))
+                if cp is not None:
+                    skip_files.add(cp.name.lower())
+                    skip_files.add(cp.resolve().as_posix().lower())
+            except Exception:
+                pass
+            skip_files.add(f"{str(cid).lower()}.md")
             for p in sorted(root.rglob("*.md")):
                 name = p.name.lower()
-                if name in _SKIP_NAMES:
+                if name in skip_files or name in {"card.md", "character.md", "persona.md"}:
                     continue
                 if "memory" in p.parts:
                     continue
-                # карточку персонажа ядро и так кладёт в system
-                if name in {"card.md", "character.md", "persona.md"}:
-                    continue
+                try:
+                    if p.resolve().as_posix().lower() in skip_files:
+                        continue
+                except Exception:
+                    pass
                 try:
                     text = p.read_text(encoding="utf-8")[:1500].strip()
                 except Exception:

@@ -46,6 +46,8 @@ class PluginImpl(Plugin):
             self._timer = None
 
     def on_user_message(self, text, app):
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return None
         low = (text or "").strip().lower()
         if low.startswith("напомни"):
             return HookResult(True, self.tool_add(app, text=text))
@@ -267,6 +269,20 @@ class PluginImpl(Plugin):
         return {}
 
     def _refresh_ui(self, app: Optional[AppContext] = None) -> None:
+        def go():
+            self._refresh_ui_now(app)
+        win = None
+        try:
+            a = app or self.app
+            win = getattr(a, "window", None) if a else None
+        except Exception:
+            win = None
+        if win is not None and hasattr(win, "post"):
+            win.post(go)
+        else:
+            go()
+
+    def _refresh_ui_now(self, app: Optional[AppContext] = None) -> None:
         lst = self._ui.get("list")
         if lst is None:
             return
