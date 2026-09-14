@@ -311,7 +311,7 @@ class ChatEngine:
 
     def _filter_out(self, text: str) -> str:
         try:
-            from core.policy import check_assistant_text
+            from core._guard import check_assistant_text
             leak = check_assistant_text(text, self.app)
         except Exception as e:
             print(f"policy after: {e}", flush=True)
@@ -424,7 +424,7 @@ class ChatEngine:
         if not text:
             return
         try:
-            from core.policy import check_user_text
+            from core._guard import check_user_text
             chk = check_user_text(text, self.app)
         except Exception as e:
             print(f"policy check: {e}", flush=True)
@@ -553,7 +553,7 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core.policy import sanitize_card, scrub_for_llm
+            from core._guard import sanitize_card, scrub_for_llm
             card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
         except Exception:
             card = ""
@@ -579,7 +579,7 @@ class ChatEngine:
             "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
         )
         try:
-            from core.policy import build_policy_prompt, scrub_for_llm
+            from core._guard import build_policy_prompt, scrub_for_llm
             system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
         except Exception as e:
             print(f"policy: {e}", flush=True)
@@ -645,13 +645,13 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core.policy import sanitize_card, scrub_for_llm
+            from core._guard import sanitize_card, scrub_for_llm
             card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
         try:
-            from core.policy import build_policy_prompt, scrub_for_llm
+            from core._guard import build_policy_prompt, scrub_for_llm
             system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
         except Exception:
             pass
@@ -670,7 +670,7 @@ class ChatEngine:
             return ""
         text = self._strip_anim_for_chat(raw or "")
         try:
-            from core.policy import check_assistant_text
+            from core._guard import check_assistant_text
             leak = check_assistant_text(text, self.app)
             if leak.get("blocked"):
                 return ""

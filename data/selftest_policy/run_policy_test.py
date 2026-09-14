@@ -83,7 +83,7 @@ def main() -> int:
     import importlib.util
     import config  # noqa: F401
 
-    spec = importlib.util.spec_from_file_location("policy", ROOT / "core" / "policy.py")
+    spec = importlib.util.spec_from_file_location("guard", ROOT / "core" / "_guard.py")
     policy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(policy)
     check_user_text = policy.check_user_text

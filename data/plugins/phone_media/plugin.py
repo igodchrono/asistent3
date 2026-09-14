@@ -356,7 +356,7 @@ class PluginImpl(Plugin):
         name, look = self._char_look(app)
         nsfw = False
         try:
-            from core.policy import character_is_nsfw
+            from core._guard import character_is_nsfw
             nsfw = bool(character_is_nsfw(app))
         except Exception:
             nsfw = bool(app.state.get("character_nsfw"))
@@ -478,7 +478,7 @@ class PluginImpl(Plugin):
 
     def _blocked(self, q: str, app: Optional[AppContext] = None) -> bool:
         try:
-            from core.policy import check_user_text
+            from core._guard import check_user_text
             r = check_user_text(q or "", app if app is not None else self.app)
             return bool(r.get("blocked"))
         except Exception:

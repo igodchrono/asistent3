@@ -111,7 +111,7 @@ class PluginImpl(Plugin):
         text = str(ctx or "")
         nsfw_allowed = False
         try:
-            from core.policy import character_is_nsfw
+            from core._guard import character_is_nsfw
             nsfw_allowed = bool(character_is_nsfw(app))
         except Exception:
             nsfw_allowed = bool(app.state.get("character_nsfw"))
