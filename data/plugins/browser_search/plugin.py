@@ -1,90 +1,154 @@
 # -*- coding: utf-8 -*-
-"""Браузерный поиск: multi-query, normalize, open tabs."""
+"""Поиск + парсер выдачи + скачивание картинок/текста/файлов в чат."""
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+import time
 import webbrowser
-from typing import Any, List, Optional
-from urllib.parse import quote_plus
+from datetime import datetime
+from html import unescape
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+_IMG_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+
+
+class _TextExtract(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip = 0
+        self.parts: List[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript", "svg", "iframe"):
+            self._skip += 1
+        if tag in ("p", "br", "li", "h1", "h2", "h3", "tr", "div"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript", "svg", "iframe") and self._skip:
+            self._skip -= 1
+        if tag in ("p", "li", "h1", "h2", "h3"):
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        t = " ".join((data or "").split())
+        if t:
+            self.parts.append(t + " ")
 
 
 class PluginImpl(Plugin):
     id = "browser_search"
     name = "Браузер и поиск"
-    version = "3.1.0"
-    description = "Поиск в браузере, несколько вкладок"
+    version = "4.2.0"
+    description = "Парсер выдачи + скачивание картинок/текста/файлов в чат"
     settings_tab = "own"
     settings_tab_title = "Браузер"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField(
-            "search_engine", "Поисковая система", "choice", "google",
+            "search_engine", "Поисковая система (вкладка)", "choice", "google",
             choices=["google", "yandex", "bing", "duckduckgo"],
         ),
         SettingField(
-            "open_each_query",
-            "Несколько запросов → несколько вкладок",
-            "bool",
-            True,
-        ),
-        SettingField(
             "browser", "Браузер", "choice", "default",
-            choices=["default", "embed", "chrome", "edge", "firefox", "opera", "brave"],
+            choices=["default", "chrome", "edge", "firefox", "opera", "brave"],
         ),
+        SettingField("open_browser", "Открывать вкладку поиска", "bool", True),
+        SettingField("parse_results", "Парсить выдачу (ссылки/картинки)", "bool", True),
+        SettingField("auto_download_first", "После поиска картинок сразу 1-ю в чат", "bool", True),
+        SettingField("open_each_query", "Несколько запросов → несколько вкладок", "bool", True),
+        SettingField("max_results", "Сколько результатов держать", "int", 8, min_value=3, max_value=20),
+        SettingField("max_text_chars", "Символов текста страницы в чат", "int", 3500, min_value=500, max_value=12000),
     ]
 
-    def on_user_message(self, text, app):
-        if app.state.get("ero_game"):
-            return None  # режим эро-игры — фото-чат, не браузер
-        if not app.get_plugin_setting(self.id, "enabled", True):
-            return None
-        if hasattr(app, "is_plugin_enabled") and not app.is_plugin_enabled(self.id):
-            return None
-        low = (text or "").strip().lower()
-        # «открой её / в другой вкладке» после поиска картинок
-        if low.startswith("открой") or low.startswith("открыть") or low in ("открой", "открыть"):
-            if app.state.get("last_search_query") or app.state.get("last_search_url") or app.state.get("last_image_pick"):
-                if any(w in low for w in (
-                    "ее", "её", "эту", "это", "ту", "картин", "ссылк", "вкладк",
-                    "лучш", "выбор", "найден", "перв", "открыть",
-                )) or low in ("открой", "открыть"):
-                    return HookResult(True, self.tool_open_last(app, text=text))
-        return None
+    def on_load(self, app: AppContext) -> None:
+        print("🌐 browser_search 4.2: parse + download to chat", flush=True)
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["web_search"] = self.tool_web_search
         app.tools["search_similar"] = self.tool_search_similar
         app.tools["open_last_search"] = self.tool_open_last
+        app.tools["download_image"] = self.tool_download_image
+        app.tools["fetch_page"] = self.tool_fetch_page
+        app.tools["save_search_result"] = self.tool_download_image
+        app.tools["fetch_url"] = self.tool_fetch_url
 
+    def on_user_message(self, text, app):
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return None
+        if hasattr(app, "is_plugin_enabled") and not app.is_plugin_enabled(self.id):
+            return None
+        low = (text or "").strip().lower()
+        if not low:
+            return None
 
-    def _use_embed(self, app: AppContext) -> bool:
-        """Встроенный браузер только если явно выбран embed И плагин включён."""
-        emb = app.plugins.get("browser_embed")
-        if emb is None:
-            return False
-        if not app.get_plugin_setting("browser_embed", "enabled", False):
-            return False
-        name = str(app.get_plugin_setting(self.id, "browser", "default") or "default").lower().strip()
-        return name in ("embed", "lisichka", "лисичка", "встроенный", "internal")
+        if any(x in low for x in ("файл", "папк", "на диск", "на диске", "в проводнике")):
+            return None
 
+        # прямая ссылка
+        murl = _URL_RE.search(text or "")
+        if murl and any(w in low for w in ("скач", "сохрани", "открой ссыл", "текст со", "выдай", "в чат")):
+            return HookResult(True, self.tool_fetch_url(app, url=murl.group(0)))
+
+        idx = self._index_from_text(low)
+
+        want_save = any(
+            w in low
+            for w in (
+                "скачай", "скачать", "сохрани в чат", "в чат", "пришли картин",
+                "выдай картин", "пришли фото", "скинь картин", "скачай картин",
+                "сохрани картин", "эту картин", "лучш",
+            )
+        )
+        want_open = low.startswith("открой") or low.startswith("открыть")
+        pick_words = ("ее", "её", "эту", "этот", "картин", "ссылк", "вкладк", "лучш", "перв")
+        has_search = bool(
+            app.state.get("last_search_results")
+            or app.state.get("last_search_query")
+            or app.state.get("last_search_url")
+        )
+
+        if (want_save or (want_open and any(w in low for w in pick_words))) and has_search:
+            mode = str(app.state.get("last_search_mode") or "web")
+            if "вкладк" in low and "чат" not in low:
+                return HookResult(True, self.tool_open_last(app, text=text, browser_only=True))
+            if mode == "images" or want_save or "картин" in low or "фото" in low:
+                return HookResult(True, self.tool_download_image(app, index=idx, text=text))
+            return HookResult(True, self.tool_fetch_page(app, index=idx, text=text))
+
+        explicit = (
+            "найди в интернете", "поищи в интернете", "поищи в сети",
+            "погугли", "загугли", "в гугле",
+            "найди картинки", "найди картинку", "найди фото", "поиск картинок",
+            "найди на youtube", "найди видео",
+        )
+        if not any(t in low for t in explicit):
+            return None
+        mode = self._guess_mode(text)
+        q = self._normalize_query(text)
+        return HookResult(True, self.tool_web_search(app, query=q or text, mode=mode))
 
     def tool_web_search(
         self, app: AppContext, query: str = "", mode: str = "web", **kwargs
     ) -> str:
         if not app.get_plugin_setting(self.id, "enabled", True):
-            return "SEARCH_FAIL reason=disabled"
-        if hasattr(app, "is_plugin_enabled") and not app.is_plugin_enabled(self.id):
-            return "SEARCH_FAIL reason=disabled"
-        if app.state.get("ero_game"):
-            pm = app.plugins.get("phone_media")
-            if pm and hasattr(pm, "tool_send_photo"):
-                print("browser_search: ero_game → phone_media", flush=True)
-                return pm.tool_send_photo(app, query=query or kwargs.get("text") or "")
-            return "Сначала игра ловит фото. Скажи: пришли фото."
-
+            return "Поиск выключен."
         mode = (mode or "web").lower()
         queries = kwargs.get("queries") or []
         if isinstance(queries, str):
@@ -95,145 +159,481 @@ class PluginImpl(Plugin):
             if q0:
                 queries = self._split_user_queries(q0)
         if not queries:
-            return "SEARCH_FAIL reason=empty_query"
-
-        norm = []
-        for q in queries:
-            n = self._normalize_query(q) or q
-            n = (n or q).strip()
-            if n:
-                norm.append(n)
-        queries = norm or queries
-
+            return "Пустой запрос."
+        queries = [self._normalize_query(q) or q for q in queries]
         if mode not in ("web", "images", "video"):
             mode = self._guess_mode(queries[0])
 
         multi = bool(app.get_plugin_setting(self.id, "open_each_query", True))
         to_open = queries if (multi and len(queries) > 1) else [queries[0]]
+        q = to_open[0]
 
-        if self._use_embed(app):
-            emb = app.plugins.get("browser_embed")
-            if emb and hasattr(emb, "tool_search"):
-                last = "SEARCH_FAIL"
-                use_q = queries if (bool(app.get_plugin_setting(self.id, "open_each_query", True)) and len(queries) > 1) else [queries[0]]
-                for q in use_q:
-                    print(f"browser_search: → embed search q={q!r} mode={mode}", flush=True)
-                    last = emb.tool_search(app, query=q, mode=mode)
-                return last
-            print("browser_search: embed выбран, плагин browser_embed не найден", flush=True)
-        opened = []
-        for q in to_open:
-            url = self._url(q, mode, app)
-            print(f"browser_search: open mode={mode} q={q!r} url={url[:120]}", flush=True)
-            try:
-                self._open(url, app)
-                opened.append(q)
-            except Exception as e:
-                print(f"browser_search: open fail {e}", flush=True)
-        if not opened:
-            return "SEARCH_FAIL reason=open_error"
+        if bool(app.get_plugin_setting(self.id, "open_browser", True)):
+            for item in to_open:
+                url = self._url(item, mode, app)
+                print(f"browser_search: open mode={mode} q={item!r}", flush=True)
+                try:
+                    self._open(url, app)
+                except Exception as e:
+                    print(f"browser_search: open fail {e}", flush=True)
 
-        self._emotion(app, opened[0])
-        app.state["last_search_query"] = opened[0]
-        app.state["last_search_queries"] = opened
+        app.state["last_search_query"] = q
+        app.state["last_search_queries"] = to_open
         app.state["last_search_mode"] = mode
-        try:
-            app.state["last_search_url"] = self._url(opened[0], mode, app)
-        except Exception:
-            pass
-        if opened:
+        app.state["last_search_url"] = self._url(q, mode, app)
+        self._emotion(app, q)
+
+        results: List[Dict[str, Any]] = []
+        if bool(app.get_plugin_setting(self.id, "parse_results", True)):
+            n = int(app.get_plugin_setting(self.id, "max_results", 8) or 8)
             try:
-                app.state["last_search_url"] = self._url(opened[0], mode, app)
-            except Exception:
-                pass
-        if len(opened) == 1:
-            return f"открыла поиск ({mode}): {opened[0]}"
-        return f"открыла несколько вкладок ({mode}): " + "; ".join(opened)
+                if mode == "images":
+                    results = self._parse_images(q, n)
+                elif mode == "video":
+                    results = [{"title": q, "url": self._url(q, "video", app), "kind": "video"}]
+                else:
+                    results = self._parse_web(q, n)
+            except Exception as e:
+                print(f"browser_search: parse fail {e}", flush=True)
+        app.state["last_search_results"] = results
+        print(f"browser_search: parsed n={len(results)} mode={mode} q={q!r}", flush=True)
+
+        lines = [f"Нашла по запросу «{q}» ({mode})."]
+        if results:
+            lines.append("Скажи «скачай 1» / «открой её» / «текст со 2».")
+            for i, r in enumerate(results[:8], 1):
+                title = (r.get("title") or r.get("url") or "")[:90]
+                lines.append(f"{i}. {title}")
+            extract0 = str((results[0] or {}).get("extract") or "")
+            if extract0:
+                lines.append("")
+                lines.append(extract0[:900])
+        else:
+            lines.append("Вкладка поиска открыта. Парсер ничего не вытащил — дай прямую ссылку.")
+
+        if (
+            mode == "images"
+            and results
+            and bool(app.get_plugin_setting(self.id, "auto_download_first", True))
+        ):
+            extra = self.tool_download_image(app, index=1)
+            lines.append("")
+            lines.append(extra)
+        return "\n".join(lines)
 
     def tool_search_similar(self, app: AppContext, kind: str = "generic", **kwargs) -> str:
-        if app.state.get("ero_game"):
-            pm = app.plugins.get("phone_media")
-            if pm and hasattr(pm, "tool_send_photo"):
-                print("browser_search: similar → phone_media", flush=True)
-                return pm.tool_send_photo(app, query=str(kwargs.get("query") or "photo"))
-        q = self._similar_query(app, kind)
+        q = self._similar_query(app, kind) or str(kwargs.get("query") or "").strip()
         if not q:
-            q = str(kwargs.get("query") or "").strip()
-        if not q:
-            return "SEARCH_FAIL reason=no_similar_context"
+            return "Нет контекста, что искать похожее."
         mode = "images" if kind in ("image", "images") else "web"
         return self.tool_web_search(app, query=q, mode=mode)
 
-    def tool_open_last(self, app: AppContext, text: str = "", **kwargs) -> str:
-        if self._use_embed(app):
-            emb = app.plugins.get("browser_embed")
-            if emb and hasattr(emb, "tool_open_last"):
-                return emb.tool_open_last(app, text=text, **kwargs)
-        """Открыть последнюю ВЫДАЧУ поиска, не текст ответа ассистента."""
-        q = str(app.state.get("last_search_query") or "").strip()
-        mode = str(app.state.get("last_search_mode") or "images")
-        url = str(app.state.get("last_search_url") or "").strip()
-        low = (text or "").lower()
-
-        # Игнорируем прозу чата в last_image_pick
-        pick = str(app.state.get("last_image_pick") or "").strip()
-        if pick and self._is_sane_query(pick):
-            if q and pick.lower() not in q.lower():
-                q_try = (q + " " + pick).strip()
-            else:
-                q_try = pick
-            if self._is_sane_query(q_try):
-                q = q_try
-                url = ""
-
-        if not q and not url:
-            return "Нет последнего поиска картинок. Сначала найди изображения."
-
-        if url and not (pick and self._is_sane_query(pick)):
-            # предпочтительно та же выдача
-            pass
-        elif not url:
-            if not self._is_sane_query(q):
-                q = str(app.state.get("last_search_query") or "").strip()
-            if not q:
-                return "Нечего открыть."
-            mode = mode if mode in ("web", "images", "video") else "images"
-            url = self._url(q, mode, app)
-
-        # если url был от прозы — пересобрать
-        if not self._is_sane_query(q) and app.state.get("last_search_query"):
-            q = str(app.state.get("last_search_query")).strip()
-            mode = str(app.state.get("last_search_mode") or "images")
-            url = self._url(q, mode if mode in ("web", "images", "video") else "images", app)
-
-        print(f"browser_search: open_last q={q!r} url={url[:140]}", flush=True)
-        try:
+    def tool_open_last(self, app: AppContext, text: str = "", browser_only: bool = False, **kwargs):
+        if browser_only:
+            url = str(app.state.get("last_search_url") or "")
+            q = str(app.state.get("last_search_query") or "")
+            if not url and q:
+                url = self._url(q, str(app.state.get("last_search_mode") or "web"), app)
+            if not url:
+                return "Нет последнего поиска."
             self._open(url, app)
+            return f"Открыла вкладку поиска: {q or url}"
+        mode = str(app.state.get("last_search_mode") or "web")
+        idx = self._index_from_text(text) or int(kwargs.get("index") or 1)
+        if mode == "images":
+            return self.tool_download_image(app, index=idx, text=text)
+        return self.tool_fetch_page(app, index=idx, text=text)
+
+    def tool_fetch_url(self, app: AppContext, url: str = "", **kw) -> str:
+        src = (url or kw.get("href") or "").strip()
+        if not src:
+            return "Нет ссылки."
+        try:
+            data, ctype, final = self._http_get(src)
         except Exception as e:
-            return f"Не удалось открыть вкладку: {e}"
-        app.state["last_search_url"] = url
-        if "вкладк" in low:
-            return f"Открыла вкладку с выдачей: {q}"
-        return f"Открыла выдачу поиска: {q}"
+            return f"Не скачать: {e}"
+        ext = self._ext_from(data, ctype, final)
+        if (ctype or "").startswith("image/") or ext in _IMG_EXT:
+            return self.tool_download_image(app, url=final or src)
+        dest_dir = self._inbox(app)
+        if "pdf" in (ctype or "") or (final or src).lower().endswith(".pdf"):
+            dest = dest_dir / f"doc_{int(time.time())}.pdf"
+            dest.write_bytes(data)
+            app.state["last_downloaded"] = str(dest)
+            return f"Скачала PDF ({len(data)} байт)\n[файл: {dest}]"
+        if "json" in (ctype or "") or (final or src).lower().endswith(".json"):
+            dest = dest_dir / f"data_{int(time.time())}.json"
+            dest.write_bytes(data)
+            snippet = data.decode("utf-8", "replace")[:2000]
+            app.state["last_downloaded"] = str(dest)
+            return f"JSON:\n{snippet}\n\n[файл: {dest}]"
+        if len(data) > 6_000_000:
+            dest = dest_dir / f"bin_{int(time.time())}.bin"
+            dest.write_bytes(data[:6_000_000])
+            return f"Большой файл, сохранила кусок: {dest}"
+        html = data.decode("utf-8", "replace")
+        body = self._html_text(html)
+        lim = int(app.get_plugin_setting(self.id, "max_text_chars", 3500) or 3500)
+        if len(body) > lim:
+            body = body[:lim] + "…"
+        dest = dest_dir / f"page_{int(time.time())}.txt"
+        dest.write_text(body, encoding="utf-8")
+        app.state["last_downloaded"] = str(dest)
+        return f"Текст со страницы «{final or src}»:\n\n{body}\n\n[файл: {dest}]"
+
+    def tool_download_image(self, app: AppContext, index: int = 1, url: str = "", text: str = "", **kw) -> str:
+        results = list(app.state.get("last_search_results") or [])
+        q = str(app.state.get("last_search_query") or "")
+        if not results and q:
+            try:
+                results = self._parse_images(q, int(app.get_plugin_setting(self.id, "max_results", 8) or 8))
+                app.state["last_search_results"] = results
+            except Exception as e:
+                print(f"browser_search: reparse images {e}", flush=True)
+        idx = int(index or kw.get("n") or 1)
+        if idx < 1:
+            idx = 1
+        src = (url or kw.get("href") or "").strip()
+        title = ""
+        if not src and results:
+            if idx > len(results):
+                idx = 1
+            hit = results[idx - 1]
+            src = str(hit.get("image") or hit.get("url") or "")
+            title = str(hit.get("title") or "")
+        if not src:
+            return "Нет картинки для скачивания. Сначала найди изображения."
+        if src.startswith("//"):
+            src = "https:" + src
+        try:
+            data, ctype, final = self._http_get(src)
+        except Exception as e:
+            return f"Не скачать картинку: {e}"
+        if len(data) < 80:
+            return "Файл слишком маленький — это не картинка."
+        ext = self._ext_from(data, ctype, final)
+        if ext not in _IMG_EXT:
+            return f"По ссылке не картинка ({ctype or ext}). Дай прямую ссылку на jpg/png."
+        dest = self._inbox(app) / f"web_{int(time.time())}_{idx}{ext}"
+        dest.write_bytes(data)
+        app.state["last_downloaded"] = str(dest)
+        app.state["phone_media_last"] = str(dest)
+        app.state["last_attachments"] = [str(dest)]
+        print(f"browser_search: saved image {dest} ({len(data)} b)", flush=True)
+        label = title or q or dest.name
+        return f"Скачала в чат: {label}\n[фото: {dest}]"
+
+    def tool_fetch_page(self, app: AppContext, index: int = 1, url: str = "", text: str = "", **kw) -> str:
+        results = list(app.state.get("last_search_results") or [])
+        q = str(app.state.get("last_search_query") or "")
+        if not results and q and str(app.state.get("last_search_mode") or "web") != "images":
+            try:
+                results = self._parse_web(q, int(app.get_plugin_setting(self.id, "max_results", 8) or 8))
+                app.state["last_search_results"] = results
+            except Exception as e:
+                print(f"browser_search: reparse web {e}", flush=True)
+        idx = int(index or 1)
+        src = (url or "").strip()
+        title = ""
+        if not src and results:
+            if idx < 1 or idx > len(results):
+                idx = 1
+            hit = results[idx - 1]
+            src = str(hit.get("url") or "")
+            title = str(hit.get("title") or "")
+        if not src:
+            return "Нет страницы. Сначала поиск или прямая ссылка."
+        return self.tool_fetch_url(app, url=src)
+
+    def _parse_web(self, query: str, n: int) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        try:
+            wiki = self._wiki_hit(query)
+            if wiki:
+                out.append(wiki)
+                seen.add(wiki["url"])
+        except Exception as e:
+            print(f"browser_search: wiki {e}", flush=True)
+        url = "https://html.duckduckgo.com/html/?q=" + quote_plus(query)
+        try:
+            raw, _, _ = self._http_get(url)
+            html = raw.decode("utf-8", "replace")
+        except Exception as e:
+            print(f"browser_search: ddg html {e}", flush=True)
+            return out
+        for m in re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>'
+            r'|<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            html,
+            re.I | re.S,
+        ):
+            href = self._unwrap_ddg(m.group(1) or m.group(3) or "")
+            title_html = m.group(2) or m.group(4) or ""
+            title = re.sub(r"<[^>]+>", "", title_html)
+            title = unescape(" ".join(title.split()))
+            if not href.startswith("http"):
+                continue
+            if any(x in href for x in ("duckduckgo.com/y.js", "advert")):
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            out.append({"title": title or href, "url": href, "kind": "web"})
+            if len(out) >= n:
+                break
+        return out
+
+    def _wiki_hit(self, query: str) -> Optional[Dict[str, Any]]:
+        api = (
+            "https://ru.wikipedia.org/w/api.php?action=opensearch&limit=3&format=json&search="
+            + quote_plus(query)
+        )
+        try:
+            raw, _, _ = self._http_get(api, timeout=12)
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            return None
+        titles = data[1] if len(data) > 1 else []
+        descs = data[2] if len(data) > 2 else []
+        links = data[3] if len(data) > 3 else []
+        if not links:
+            return None
+        title = titles[0] if titles else query
+        extract = descs[0] if descs else ""
+        href = links[0]
+        extract = extract or self._wiki_summary(title)
+        return {
+            "title": f"{title} — {extract}"[:160],
+            "url": href,
+            "kind": "web",
+            "extract": extract,
+        }
+
+    def _wiki_summary(self, title: str) -> str:
+        slug = quote_plus(title.replace(" ", "_"))
+        url = f"https://ru.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        try:
+            raw, _, _ = self._http_get(url, timeout=10)
+            data = json.loads(raw.decode("utf-8", "replace"))
+            return str(data.get("extract") or "")[:800]
+        except Exception:
+            return ""
+
+    def _parse_images(self, query: str, n: int) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for fn in (self._images_openverse, self._images_wikimedia, self._images_bing, self._images_ddg):
+            try:
+                hits = fn(query, n)
+            except Exception as e:
+                print(f"browser_search: {fn.__name__} {e}", flush=True)
+                hits = []
+            for h in hits:
+                key = str(h.get("image") or h.get("url") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(h)
+                if len(merged) >= n:
+                    return merged
+        return merged
+
+    def _images_openverse(self, query: str, n: int) -> List[Dict[str, Any]]:
+        url = (
+            "https://api.openverse.org/v1/images/"
+            f"?q={quote_plus(query)}&page_size={max(n, 5)}"
+        )
+        raw, _, _ = self._http_get(url)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        out = []
+        for r in data.get("results") or []:
+            img = r.get("url") or r.get("thumbnail")
+            if not img:
+                continue
+            out.append({
+                "title": r.get("title") or query,
+                "url": r.get("foreign_landing_url") or img,
+                "image": img,
+                "thumb": r.get("thumbnail") or img,
+                "kind": "image",
+            })
+            if len(out) >= n:
+                break
+        return out
+
+    def _images_wikimedia(self, query: str, n: int) -> List[Dict[str, Any]]:
+        url = (
+            "https://commons.wikimedia.org/w/api.php?action=query&format=json"
+            "&generator=search&gsrsearch=" + quote_plus(query)
+            + f"&gsrnamespace=6&gsrlimit={n}&prop=imageinfo&iiprop=url|size"
+        )
+        raw, _, _ = self._http_get(url)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        pages = ((data.get("query") or {}).get("pages") or {})
+        out = []
+        for p in pages.values():
+            info = (p.get("imageinfo") or [{}])[0]
+            img = info.get("url")
+            if not img:
+                continue
+            out.append({
+                "title": p.get("title") or query,
+                "url": img,
+                "image": img,
+                "kind": "image",
+            })
+            if len(out) >= n:
+                break
+        return out
+
+    def _images_bing(self, query: str, n: int) -> List[Dict[str, Any]]:
+        url = (
+            "https://www.bing.com/images/async?q="
+            + quote_plus(query)
+            + "&first=0&count=%d" % max(n, 8)
+        )
+        raw, _, _ = self._http_get(url)
+        html = raw.decode("utf-8", "replace")
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        pat = re.compile(r"https?://[^\s\"\'<>]+\.(?:jpg|jpeg|png|gif|webp)", re.I)
+        html = unescape(html)
+        for m in pat.finditer(html):
+            img = unescape(m.group(0))
+            if "bing.com" in img or img in seen:
+                continue
+            seen.add(img)
+            out.append({"title": query, "url": img, "image": img, "kind": "image"})
+            if len(out) >= n:
+                break
+        return out
+
+    def _images_ddg(self, query: str, n: int) -> List[Dict[str, Any]]:
+        home = "https://duckduckgo.com/?q=" + quote_plus(query) + "&iax=images&ia=images"
+        raw, _, _ = self._http_get(home)
+        html = raw.decode("utf-8", "replace")
+        m = re.search(r"vqd=([\"']?)([0-9-]+)\1", html)
+        if not m:
+            m = re.search(r"vqd=([0-9-]+)", html)
+        if not m:
+            return []
+        vqd = m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1)
+        api = (
+            "https://duckduckgo.com/i.js?l=wt-wt&o=json&q="
+            + quote_plus(query)
+            + "&vqd=" + vqd + "&f=,,,"
+        )
+        raw2, _, _ = self._http_get(api)
+        data = json.loads(raw2.decode("utf-8", "replace"))
+        out = []
+        for r in data.get("results") or []:
+            img = r.get("image") or r.get("thumbnail")
+            if not img:
+                continue
+            out.append({
+                "title": r.get("title") or query,
+                "url": r.get("url") or img,
+                "image": img,
+                "kind": "image",
+            })
+            if len(out) >= n:
+                break
+        return out
+
+    def _http_get(self, url: str, timeout: int = 25) -> Tuple[bytes, str, str]:
+        req = Request(
+            url,
+            headers={
+                "User-Agent": _UA,
+                "Accept": "*/*",
+                "Accept-Language": "ru,en;q=0.8",
+            },
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+            ctype = ""
+            try:
+                ctype = resp.headers.get_content_type() or ""
+            except Exception:
+                ctype = str(resp.headers.get("Content-Type") or "")
+            return data, ctype, resp.geturl()
+
+    def _http_get_safe(self, url: str, timeout: int = 25) -> Tuple[bytes, str, str]:
+        try:
+            return self._http_get(url, timeout=timeout)
+        except (HTTPError, URLError, TimeoutError, OSError):
+            return b"", "", url
+
+    def _inbox(self, app: AppContext) -> Path:
+        root = Path(__file__).resolve().parents[2] / "attachments" / datetime.now().strftime("%Y-%m-%d")
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     @staticmethod
-    def _is_sane_query(q: str) -> bool:
-        q = (q or "").strip()
-        if len(q) < 2 or len(q) > 80:
-            return False
-        low = q.lower()
-        for b in (
-            "хозяин", "эй,", "фрр", "нравится", "могу ещё", "могу еще",
-            "search_ok", "anim:", "вот эта", "для тебя",
-        ):
-            if b in low:
-                return False
-        if q.count(".") + q.count("!") + q.count("?") > 1:
-            return False
-        if q.count(",") > 2:
-            return False
-        return True
+    def _ext_from(data: bytes, ctype: str, url: str) -> str:
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if data[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return ".gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return ".webp"
+        c = (ctype or "").lower()
+        if "png" in c:
+            return ".png"
+        if "gif" in c:
+            return ".gif"
+        if "webp" in c:
+            return ".webp"
+        if "jpeg" in c or "jpg" in c:
+            return ".jpg"
+        path = urlparse(url).path.lower()
+        for e in _IMG_EXT:
+            if path.endswith(e):
+                return e
+        return ".bin"
 
+    @staticmethod
+    def _html_text(html: str) -> str:
+        p = _TextExtract()
+        try:
+            p.feed(html)
+            p.close()
+        except Exception:
+            pass
+        t = "".join(p.parts)
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        return t.strip()
+
+    @staticmethod
+    def _unwrap_ddg(href: str) -> str:
+        href = unquote(href or "")
+        if href.startswith("//"):
+            href = "https:" + href
+        if "uddg=" in href:
+            q = parse_qs(urlparse(href).query)
+            if q.get("uddg"):
+                return unquote(q["uddg"][0])
+        return href
+
+    @staticmethod
+    def _index_from_text(text: str) -> int:
+        low = (text or "").lower()
+        m = re.search(r"(?:^|\s)(?:номер\s*)?(\d{1,2})(?:\s|$)", low)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 20:
+                return n
+        words = {
+            "перв": 1, "втор": 2, "трет": 3, "треть": 3,
+            "четвёрт": 4, "четверт": 4, "пят": 5,
+        }
+        for w, n in words.items():
+            if w in low:
+                return n
+        return 1
 
     @staticmethod
     def _split_user_queries(text: str) -> list:
@@ -260,14 +660,12 @@ class PluginImpl(Plugin):
     def _normalize_query(text: str) -> str:
         t = (text or "").strip()
         fluff = [
-            r"^\s*(так\s+)",
             r"^\s*(пожалуйста\s*[,:]?\s*)",
             r"^\s*(можешь|можете)\s+",
             r"^\s*(найди|найти|поищи|поискать|погугли|загугли|поиск)\s+",
             r"\b(в\s+интернете|в\s+гугле|в\s+google|в\s+сети|онлайн)\b",
             r"^\s*(мне|для\s+меня)\s+",
             r"^\s*(фотографию|фотография|фото|картинку|картинки|изображения|видео)\s+(по|про|с)?\s*",
-            r"^\s*(что-?то|чего-?то|что\s+нибудь)\s+",
         ]
         prev = None
         while prev != t:
@@ -284,8 +682,6 @@ class PluginImpl(Plugin):
             junk = ("день", "вечер", "утро", "лови", "ищу", "жми")
             if raw and not any(j in raw.lower() for j in junk):
                 val = raw
-        if not val:
-            return ""
         words = []
         stop = {"монитор", "экран", "chrome", "google", "вижу", "хозяин", "окно"}
         for w in re.findall(r"[A-Za-zА-Яа-яЁё0-9]{3,}", val):
@@ -313,6 +709,8 @@ class PluginImpl(Plugin):
                 return f"https://yandex.ru/images/search?text={enc}"
             if engine == "bing":
                 return f"https://www.bing.com/images/search?q={enc}"
+            if engine == "duckduckgo":
+                return f"https://duckduckgo.com/?q={enc}&iax=images&ia=images"
             return f"https://www.google.com/search?tbm=isch&q={enc}"
         if mode == "video":
             return f"https://www.youtube.com/results?search_query={enc}"
@@ -327,7 +725,7 @@ class PluginImpl(Plugin):
     def _browser_exe(self, app: AppContext) -> Optional[str]:
         import os
         name = str(app.get_plugin_setting(self.id, "browser", "default") or "default").lower()
-        if name in ("", "default", "system"):
+        if name in ("", "default", "system", "embed"):
             return None
         local = os.environ.get("LOCALAPPDATA", "")
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -348,12 +746,6 @@ class PluginImpl(Plugin):
         return None
 
     def _open(self, url: str, app: AppContext) -> None:
-        if self._use_embed(app):
-            emb = app.plugins.get("browser_embed")
-            if emb and hasattr(emb, "tool_open"):
-                print(f"browser_search: → embed open {url[:100]}", flush=True)
-                emb.tool_open(app, url=url)
-                return
         exe = self._browser_exe(app)
         if exe:
             subprocess.Popen([exe, url], shell=False)
@@ -365,13 +757,11 @@ class PluginImpl(Plugin):
             print(f"browser_search: webbrowser: {e}", flush=True)
         subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
 
-
     def _emotion(self, app: AppContext, q: str) -> None:
-        emo = "flirty" if any(w in q.lower() for w in ("18+", "hentai", "хентай", "nsfw")) else "searching"
-        pl = app.plugins.get("persona") or app.state.get("emotion_plugin") or app.plugins.get("emotion")
+        pl = app.plugins.get("persona") or app.plugins.get("emotion")
         if pl and hasattr(pl, "set_context"):
             try:
-                pl.set_context(app, emo, "web_search")
+                pl.set_context(app, "searching", "web_search")
             except Exception:
                 pass
 
