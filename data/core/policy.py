@@ -11,7 +11,6 @@ _CACHE: Optional[Dict[str, Any]] = None
 _AGE_RE: Optional[Pattern[str]] = None
 _AGE_WITH: List[str] = []
 _AGE_MAX: int = 17
-
 _MODE_NSFW = {"nsfw", "uncensored", "uncensored_adult", "adult", "open"}
 _MODE_LOCK = {"full_censor", "censor_all", "lock", "sfw_strict"}
 _CARD_FORBID_ROWS = re.compile(
@@ -56,6 +55,25 @@ def _apply_age(pol: Dict[str, Any]) -> None:
         _AGE_MAX = 17
 
 
+def _compile_from(pol: Dict[str, Any]) -> None:
+    global _AGE_RE, _AGE_WITH, _AGE_MAX, _MODE_NSFW, _MODE_LOCK, _CARD_FORBID_ROWS
+    _apply_age(pol)
+    modes = pol.get("modes") if isinstance(pol.get("modes"), dict) else {}
+    nsfw = [str(x).lower() for x in (modes.get("nsfw") or []) if str(x).strip()]
+    lock = [str(x).lower() for x in (modes.get("lock") or []) if str(x).strip()]
+    if nsfw:
+        _MODE_NSFW = set(nsfw)
+    if lock:
+        _MODE_LOCK = set(lock)
+    cats = [str(x).strip() for x in (pol.get("card_forbid_allow") or []) if str(x).strip()]
+    if cats:
+        joined = "|".join(re.escape(c) for c in cats)
+        _CARD_FORBID_ROWS = re.compile(
+            rf"^(\|\s*({joined})\s*\|\s*)\*\*РАЗРЕШЕНО\*\*.*$",
+            re.I | re.M,
+        )
+
+
 def load_policy(reload: bool = False) -> Dict[str, Any]:
     global _CACHE
     if _CACHE is not None and not reload:
@@ -63,7 +81,7 @@ def load_policy(reload: bool = False) -> Dict[str, Any]:
     path = filter_path()
     if not path.exists():
         _CACHE = dict(_FALLBACK)
-        _apply_age(_CACHE)
+        _compile_from(_CACHE)
         print("filter.json отсутствует — встроенный минимум", flush=True)
         return _CACHE
     try:
@@ -72,7 +90,7 @@ def load_policy(reload: bool = False) -> Dict[str, Any]:
     except Exception as e:
         print(f"filter.json: {e}", flush=True)
         _CACHE = dict(_FALLBACK)
-    _apply_age(_CACHE)
+    _compile_from(_CACHE)
     return _CACHE
 
 
@@ -135,6 +153,7 @@ def _active_cid(app) -> str:
 
 
 def character_policy(app) -> Dict[str, Any]:
+    load_policy()
     cid = _active_cid(app)
     card = ""
     try:
@@ -258,6 +277,7 @@ def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
 
 
 def sanitize_card(card: str) -> str:
+    load_policy()
     if not (card or "").strip():
         return card or ""
     text = _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО** (системный фильтр)", card)
