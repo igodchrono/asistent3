@@ -264,16 +264,8 @@ def check_user_text(text: str, app=None) -> Dict[str, Any]:
 
 
 def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
-    pol = load_policy()
-    hit = _always_hit(text, pol)
-    if hit:
-        return {
-            "blocked": True,
-            "level": "always",
-            "hit": hit,
-            "refusal": pol.get("always_refusal") or "Эту тему я не обсуждаю.",
-        }
-    return {"blocked": False, "level": None, "hit": None, "refusal": ""}
+    """Тот же фильтр, что и на входе: always + режим персонажа."""
+    return check_user_text(text, app)
 
 
 def sanitize_card(card: str) -> str:

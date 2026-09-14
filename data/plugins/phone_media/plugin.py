@@ -23,7 +23,8 @@ from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
 _BLOCK = (
     "child", "children", "kid", "teen", "underage", "lolita", "loli", "shota",
-    "minor", "школьн", "ребён", "ребен", "детск", "малолет",
+    "minor", "школьн", "школьниц", "школьник", "ребён", "ребен", "детск", "малолет",
+    "schoolgirl", "school boy", "schoolboy",
 )
 _ASK = (
     "сгенерируй", "нарисуй", "сделай картин", "сделай изображ",
@@ -145,6 +146,8 @@ class PluginImpl(Plugin):
             return None
 
         if any(k in low for k in _ASK):
+            if self._blocked(text):
+                return HookResult(True, "Эту тему я не обсуждаю.")
             refs = self._refs(app)
             app.state["imggen_request"] = text
             app.state["imggen_refs"] = refs
@@ -358,9 +361,10 @@ class PluginImpl(Plugin):
         name, look = self._char_look(app)
         nsfw = False
         try:
-            nsfw = bool(app.state.get("nsfw") or app.get_plugin_setting("persona", "nsfw", False))
+            from core.policy import character_is_nsfw
+            nsfw = bool(character_is_nsfw(app))
         except Exception:
-            pass
+            nsfw = bool(app.state.get("character_nsfw"))
         system = (
             "Ты редактор промптов для генерации изображений. "
             "Пользователь описал сцену на русском. НЕ копируй его фразу целиком. "

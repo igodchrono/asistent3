@@ -36,7 +36,7 @@ class _LockedConn:
                 rows = cur.fetchall()
             except Exception:
                 rows = []
-            return _Snap(rows, cur.lastrowid)
+            return _Snap(rows, cur.lastrowid, getattr(cur, "rowcount", 0))
 
     def commit(self):
         with self._lock:
@@ -48,9 +48,10 @@ class _LockedConn:
 
 
 class _Snap:
-    def __init__(self, rows, lastrowid):
+    def __init__(self, rows, lastrowid, rowcount=0):
         self._rows = list(rows or [])
         self.lastrowid = lastrowid
+        self.rowcount = int(rowcount or 0)
 
     def fetchall(self):
         return self._rows

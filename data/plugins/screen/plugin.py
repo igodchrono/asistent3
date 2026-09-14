@@ -109,9 +109,12 @@ class PluginImpl(Plugin):
 
     def _infer(self, app, ctx):
         text = str(ctx or "")
-        nsfw_allowed = app.state.get("character_nsfw") if app is not None else True
-        if nsfw_allowed is None:
-            nsfw_allowed = True
+        nsfw_allowed = False
+        try:
+            from core.policy import character_is_nsfw
+            nsfw_allowed = bool(character_is_nsfw(app))
+        except Exception:
+            nsfw_allowed = bool(app.state.get("character_nsfw"))
         low = text.lower()
         if any(w in low for w in ("nsfw", "hentai", "18+", "xxx", "porno", "секс")):
             if not nsfw_allowed:

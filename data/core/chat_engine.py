@@ -286,10 +286,31 @@ class ChatEngine:
         mem = self._memory_plugin()
         if mem is None or not hasattr(mem, "record"):
             return
+        if hasattr(self.app, "is_plugin_enabled") and not self.app.is_plugin_enabled("memory"):
+            return
+        try:
+            if not self.app.get_plugin_setting("memory", "enabled", True):
+                return
+        except Exception:
+            pass
         try:
             mem.record(role, content)
         except Exception as e:
             print(f"memory record: {e}", flush=True)
+
+    def _filter_out(self, text: str) -> str:
+        try:
+            from core.policy import check_assistant_text
+            leak = check_assistant_text(text, self.app)
+        except Exception as e:
+            print(f"policy after: {e}", flush=True)
+            self.app.state["assistant_replaced"] = True
+            return "Эту тему я не обсуждаю."
+        if leak.get("blocked"):
+            self.app.state["assistant_replaced"] = True
+            print(f"policy: stripped assistant leak={leak.get('level')} hit={leak.get('hit')!r}", flush=True)
+            return str(leak.get("refusal") or "Эту тему я не обсуждаю.")
+        return text
 
     def _trim_history(self) -> None:
         n = 16
@@ -499,6 +520,7 @@ class ChatEngine:
             result = await self._run_tool_async(intent, args)
             if result is not None:
                 reply = (speak + "\n" + result).strip() if speak else result
+                reply = self._filter_out(self._strip_anim_for_chat(reply))
                 for pl in plugs:
                     try:
                         reply = pl.on_after_llm(reply, self.app) or reply
@@ -581,26 +603,17 @@ class ChatEngine:
 
         parts: List[str] = []
         model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
+        self.app.state.pop("assistant_replaced", None)
         async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
-        reply = "".join(parts)
-
+        reply = self._strip_anim_for_chat("".join(parts))
+        reply = self._filter_out(reply)
         for pl in plugs:
             try:
                 reply = pl.on_after_llm(reply, self.app) or reply
             except Exception as e:
                 print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
-
-        reply = self._strip_anim_for_chat(reply)
-        try:
-            from core.policy import check_assistant_text
-            leak = check_assistant_text(reply, self.app)
-            if leak.get("blocked"):
-                reply = str(leak.get("refusal") or "Эту тему я не обсуждаю.")
-                print(f"policy: stripped assistant leak hit={leak.get('hit')!r}", flush=True)
-        except Exception as e:
-            print(f"policy after: {e}", flush=True)
 
         if self.history and self.history[-1]["role"] == "assistant":
             self.history[-1]["content"] = reply

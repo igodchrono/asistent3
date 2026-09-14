@@ -133,6 +133,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._busy = False
         self._pending: list[Path] = []
         self._bridge = _GuiBridge(self)
+        self._pub_queue: list[str] = []
         self.setWindowTitle(getattr(config, "WINDOW_TITLE", "Лисичка — ядро"))
         self.resize(int(getattr(config, "WINDOW_WIDTH", 780)), int(getattr(config, "WINDOW_HEIGHT", 700)))
         self.setStyleSheet(WINDOW_QSS)
@@ -331,6 +332,9 @@ class ChatWindow(QtWidgets.QMainWindow):
             t = (text or "").strip()
             if not t:
                 return
+            if self._busy:
+                self._pub_queue.append(t)
+                return
             self._append("Ассистент", t)
             try:
                 eng = self.engine
@@ -357,6 +361,7 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _begin_assistant_stream(self) -> None:
         self._stream_raw = ""
         self.chat.moveCursor(QtGui.QTextCursor.End)
+        self._stream_pos = self.chat.textCursor().position()
         self._append_html(
             '<div style="margin:8px 0 12px 0;"><b style="color:#9ad7a0;">Ассистент</b><br>'
         )
@@ -374,7 +379,18 @@ class ChatWindow(QtWidgets.QMainWindow):
         bar = self.chat.verticalScrollBar()
         bar.setValue(bar.maximum())
 
-    def _finish_assistant_stream(self) -> None:
+    def _finish_assistant_stream(self, replace: str | None = None) -> None:
+        if replace:
+            try:
+                cur = self.chat.textCursor()
+                cur.setPosition(int(getattr(self, "_stream_pos", 0)))
+                cur.movePosition(QtGui.QTextCursor.End, QtGui.QTextCursor.KeepAnchor)
+                cur.removeSelectedText()
+                self.chat.setTextCursor(cur)
+            except Exception:
+                pass
+            self._append("Ассистент", replace)
+            return
         raw = getattr(self, "_stream_raw", "") or ""
         extra = ""
         for m in re.findall(r"\[фото:\s*([^\]]+)\]", raw):
@@ -470,7 +486,15 @@ class ChatWindow(QtWidgets.QMainWindow):
                 buf.append(chunk)
                 self._feed_assistant_stream(chunk)
             if streaming:
-                self._finish_assistant_stream()
+                rep = None
+                try:
+                    if self.engine.app.state.pop("assistant_replaced", None):
+                        last = (self.engine.history or [])[-1] if self.engine.history else None
+                        if last and last.get("role") == "assistant":
+                            rep = last.get("content") or ""
+                except Exception:
+                    rep = None
+                self._finish_assistant_stream(replace=rep or None)
             else:
                 self._append("Ассистент", "(пустой ответ)")
             self.set_status("idle", "готово")
@@ -483,6 +507,10 @@ class ChatWindow(QtWidgets.QMainWindow):
             self._busy = False
             self.send_btn.setEnabled(True)
             self.engine.app.state["pending_attachments"] = []
+            q = list(getattr(self, "_pub_queue", []) or [])
+            self._pub_queue = []
+            for t in q:
+                self.publish_assistant_message(t)
 
     def closeEvent(self, event) -> None:
         try:
