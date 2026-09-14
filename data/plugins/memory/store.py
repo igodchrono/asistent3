@@ -10,13 +10,15 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _STOP = {
     "это", "как", "что", "кто", "где", "когда", "меня", "тебя", "тебе",
     "привет", "пока", "ну", "да", "нет", "ок", "окей", "просто", "очень",
     "the", "and", "you", "what", "how", "hey", "hi", "please",
 }
+_SIM_FACT = 0.62
+_SIM_LINE = 0.75
 
 
 class CharacterMemoryStore:
@@ -68,6 +70,79 @@ class CharacterMemoryStore:
         except Exception:
             pass
 
+    @staticmethod
+    def _tokens(text: str) -> Set[str]:
+        return {
+            t for t in re.findall(r"[A-Za-zА-Яа-яЁё0-9_\-]{3,}", (text or "").lower())
+            if t not in _STOP
+        }
+
+    @classmethod
+    def _overlap(cls, a: str, b: str) -> float:
+        ta, tb = cls._tokens(a), cls._tokens(b)
+        if not ta or not tb:
+            al, bl = (a or "").strip().lower(), (b or "").strip().lower()
+            if not al or not bl:
+                return 0.0
+            if al == bl or al in bl or bl in al:
+                return 1.0
+            return 0.0
+        return len(ta & tb) / max(1, len(ta | tb))
+
+    @classmethod
+    def _near_dup(cls, a: str, b: str) -> bool:
+        if cls._overlap(a, b) >= _SIM_LINE:
+            return True
+        ta, tb = cls._tokens(a), cls._tokens(b)
+        if not ta or not tb:
+            return False
+        short, long = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+        return len(short) >= 2 and (len(short & long) / len(short)) >= 0.66
+
+    def _merge_text(self, old: str, new: str) -> str:
+        old, new = (old or "").strip(), (new or "").strip()
+        if not old:
+            return new
+        if not new:
+            return old
+        if new in old:
+            return old
+        if old in new:
+            return new
+        if self._overlap(old, new) >= 0.85:
+            return new if len(new) >= len(old) else old
+        # коротко дописать только новые куски
+        extra = new
+        if len(old) + 3 + len(extra) > 800:
+            extra = extra[: max(0, 800 - len(old) - 3)]
+        return old if not extra else f"{old}; {extra}"
+
+    def _find_similar_memory(self, content: str, category: str) -> Optional[sqlite3.Row]:
+        rows = self._conn.execute(
+            """
+            SELECT id, content, category, key, importance, pinned
+            FROM memories WHERE category=?
+            ORDER BY updated_at DESC LIMIT 80
+            """,
+            (category,),
+        ).fetchall()
+        best = None
+        best_s = 0.0
+        for r in rows:
+            s = self._overlap(content, r["content"] or "")
+            if s > best_s:
+                best_s = s
+                best = r
+        if best is not None and best_s >= _SIM_FACT:
+            return best
+        # почти дословный дубль в любой категории
+        for r in self._conn.execute(
+            "SELECT id, content, category, key, importance, pinned FROM memories ORDER BY updated_at DESC LIMIT 40"
+        ).fetchall():
+            if self._overlap(content, r["content"] or "") >= 0.82:
+                return r
+        return None
+
     def add(
         self,
         content: str,
@@ -84,19 +159,38 @@ class CharacterMemoryStore:
         key = (key or "").strip() or None
         if key:
             row = self._conn.execute(
-                "SELECT id FROM memories WHERE key = ? LIMIT 1", (key,)
+                "SELECT id, content, importance, pinned FROM memories WHERE key = ? LIMIT 1", (key,)
             ).fetchone()
             if row:
+                merged = self._merge_text(row["content"] or "", content)
+                imp = max(float(row["importance"] or 0), float(importance))
+                pin = 1 if (pinned or row["pinned"]) else 0
                 self._conn.execute(
                     """
                     UPDATE memories
                     SET content=?, category=?, importance=?, pinned=?, updated_at=?, last_used=?
                     WHERE id=?
                     """,
-                    (content, category, float(importance), 1 if pinned else 0, now, now, row["id"]),
+                    (merged, category, imp, pin, now, now, row["id"]),
                 )
                 self._conn.commit()
                 return int(row["id"])
+        twin = self._find_similar_memory(content, category)
+        if twin is not None:
+            merged = self._merge_text(twin["content"] or "", content)
+            imp = max(float(twin["importance"] or 0), float(importance))
+            pin = 1 if (pinned or twin["pinned"]) else 0
+            k = key or twin["key"]
+            self._conn.execute(
+                """
+                UPDATE memories
+                SET content=?, category=?, key=?, importance=?, pinned=?, updated_at=?, last_used=?
+                WHERE id=?
+                """,
+                (merged, category, k, imp, pin, now, now, twin["id"]),
+            )
+            self._conn.commit()
+            return int(twin["id"])
         cur = self._conn.execute(
             """
             INSERT INTO memories(category, key, content, importance, pinned, created_at, updated_at, last_used)
@@ -349,6 +443,11 @@ class CharacterMemoryStore:
             return -1
         if len(text) > 8000:
             text = text[:8000] + "…"
+        last = self._conn.execute(
+            "SELECT id, role, content FROM messages ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if last is not None and last["role"] == role and self._overlap(last["content"] or "", text) >= 0.92:
+            return int(last["id"])
         cur = self._conn.execute(
             "INSERT INTO messages(role, content, created_at) VALUES(?,?,?)",
             (role, text, time.time()),
@@ -454,22 +553,96 @@ class CharacterMemoryStore:
         out.reverse()
         return out
 
-    def format_diary(self, limit_days: int = 7, max_chars: int = 2200) -> str:
-        items = self.recent_summaries(limit=limit_days)
-        if not items:
+    def _day_bounds(self, day: str) -> Tuple[float, float]:
+        from datetime import datetime, timedelta
+        start = datetime.strptime(day, "%Y-%m-%d")
+        end = start + timedelta(days=1)
+        return start.timestamp(), end.timestamp()
+
+    def messages_on_day(self, day: str, limit: int = 80) -> List[Dict[str, Any]]:
+        lo, hi = self._day_bounds(day)
+        rows = self._conn.execute(
+            """
+            SELECT id, role, content, created_at FROM messages
+            WHERE created_at >= ? AND created_at < ?
+            ORDER BY id ASC LIMIT ?
+            """,
+            (lo, hi, max(1, int(limit))),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _dedupe_lines(self, lines: List[str]) -> List[str]:
+        out: List[str] = []
+        for line in lines:
+            t = re.sub(r"\s+", " ", (line or "").strip())
+            if len(t) < 8:
+                continue
+            if any(self._near_dup(t, prev) for prev in out):
+                continue
+            out.append(t)
+        return out
+
+    def cheap_day_extract(self, day: str, msgs: Optional[List[Dict[str, Any]]] = None, max_chars: int = 420) -> str:
+        msgs = list(msgs if msgs is not None else self.messages_on_day(day))
+        if not msgs:
             return ""
+        raw: List[str] = []
+        for m in msgs:
+            body = re.sub(r"\s+", " ", str(m.get("content") or "")).strip()
+            if not body:
+                continue
+            if m.get("role") == "user":
+                raw.append(body[:240])
+            elif len(body) > 40:
+                raw.append(body[:160])
+        uniq = self._dedupe_lines(raw)
+        if not uniq:
+            return ""
+        text = " | ".join(uniq)
+        if len(text) > max_chars:
+            text = text[: max_chars - 1] + "…"
+        return text
+
+    def week_days(self, limit_days: int = 7) -> List[str]:
+        from datetime import datetime, timedelta
+        n = max(1, int(limit_days))
+        today = datetime.fromtimestamp(time.time()).date()
+        return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(n - 1, -1, -1)]
+
+    def format_diary(
+        self,
+        limit_days: int = 7,
+        max_chars: int = 3500,
+        tail_ids: Optional[Set[int]] = None,
+    ) -> str:
+        """Последние limit_days календарных дней: саммари или сжатый экстракт.
+
+        Дни, целиком лежащие в рабочем хвосте, пропускаем — модель их и так видит.
+        """
+        tail_ids = set(tail_ids or [])
         lines = [
-            "[ДНЕВНИК ДИАЛОГА этого персонажа — помни и ссылайся, если спрашивают про вчера/раньше]",
-            "Не говори «я не помню», если день есть ниже.",
+            f"[НЕДЕЛЯ ДИАЛОГА «{self.character_id}» — последние {int(limit_days)} дней]",
+            "Если спрашивают про вчера/на неделе — опирайся на это. Не говори «не помню», если день есть.",
         ]
         used = 0
-        for it in items:
-            block = f"{it.get('day')}: {(it.get('text') or '').strip()}"
+        filled = 0
+        for day in self.week_days(limit_days):
+            msgs = self.messages_on_day(day)
+            if not msgs:
+                continue
+            if tail_ids and all(int(m["id"]) in tail_ids for m in msgs):
+                continue
+            row = self.get_summary(day)
+            body = ((row or {}).get("text") or "").strip() or self.cheap_day_extract(day, msgs)
+            if not body:
+                continue
+            block = f"{day}: {body}"
             if used + len(block) > max_chars:
                 break
             lines.append(block)
             used += len(block)
-        return "\n".join(lines) if len(lines) > 2 else ""
+            filled += 1
+        return "\n".join(lines) if filled else ""
 
 # alias for plugins
 MemoryStore = CharacterMemoryStore

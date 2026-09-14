@@ -313,7 +313,9 @@ class PluginImpl(Plugin):
             facts = ""
         try:
             days = int(app.get_plugin_setting(self.id, "diary_days", 7) or 7)
-            diary = self.store.format_diary(limit_days=days, max_chars=2200)
+            tail = self.store.recent_messages(limit=self._tail_n(app))
+            tail_ids = {int(r["id"]) for r in tail if r.get("id") is not None}
+            diary = self.store.format_diary(limit_days=days, max_chars=3500, tail_ids=tail_ids)
         except Exception:
             diary = ""
         inj = ""
