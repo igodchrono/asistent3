@@ -315,8 +315,7 @@ class ChatEngine:
             leak = check_assistant_text(text, self.app)
         except Exception as e:
             print(f"policy after: {e}", flush=True)
-            self.app.state["assistant_replaced"] = True
-            return "Эту тему я не обсуждаю."
+            return text
         if leak.get("blocked"):
             self.app.state["assistant_replaced"] = True
             print(f"policy: stripped assistant leak={leak.get('level')} hit={leak.get('hit')!r}", flush=True)
@@ -554,8 +553,8 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core.policy import sanitize_card
-            card = sanitize_card(read_character_card(str(cid)) or "").strip()
+            from core.policy import sanitize_card, scrub_for_llm
+            card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
         except Exception:
             card = ""
 
@@ -580,8 +579,8 @@ class ChatEngine:
             "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
         )
         try:
-            from core.policy import build_policy_prompt
-            system += "\n\n" + build_policy_prompt(self.app)
+            from core.policy import build_policy_prompt, scrub_for_llm
+            system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
         except Exception as e:
             print(f"policy: {e}", flush=True)
             if self.app.state.get("character_nsfw") is False:
@@ -646,14 +645,14 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core.policy import sanitize_card
-            card = sanitize_card(read_character_card(str(cid)) or "").strip()
+            from core.policy import sanitize_card, scrub_for_llm
+            card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
         try:
-            from core.policy import build_policy_prompt
-            system += "\n\n" + build_policy_prompt(self.app)
+            from core.policy import build_policy_prompt, scrub_for_llm
+            system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
         except Exception:
             pass
         system += "\nОдно короткое сообщение от себя. Без канцелярита, без «как ИИ»."

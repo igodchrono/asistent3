@@ -19,12 +19,29 @@ _MODE_LOCK: set = set()
 _CARD_FORBID_ROWS = re.compile(r"(?!)")  # ничего, пока не прочитали json
 _LOCKDOWN = {
     "_lockdown": True,
-    "always_refusal": "Эту тему я не обсуждаю.",
+    "always_refusal": "Фильтр не найден: положите filter.json в data/core/.",
 }
 
 
 def filter_path() -> Path:
-    return Path(__file__).resolve().parent / "filter.json"
+    here = Path(__file__).resolve().parent
+    cands = [here / "filter.json"]
+    try:
+        import config as _cfg
+        root = Path(getattr(_cfg, "DATA_DIR", here.parent))
+        cands.append(root / "core" / "filter.json")
+        cands.append(root / "filter.json")
+    except Exception:
+        pass
+    cands.append(Path.cwd() / "core" / "filter.json")
+    cands.append(Path.cwd() / "data" / "core" / "filter.json")
+    for p in cands:
+        try:
+            if p.is_file():
+                return p
+        except Exception:
+            continue
+    return cands[0]
 
 
 def policy_path() -> Path:
@@ -265,6 +282,20 @@ def check_assistant_text(text: str, app=None) -> Dict[str, Any]:
     return check_user_text(text, app)
 
 
+def scrub_for_llm(text: str) -> str:
+    """Убрать из промпта токены always_block, чтобы модель их не повторила и сама себя не забанила."""
+    pol = load_policy()
+    if pol.get("_lockdown") or not (text or ""):
+        return text or ""
+    out = text
+    words = sorted((str(w) for w in (pol.get("always_block") or []) if str(w).strip()), key=len, reverse=True)
+    for w in words:
+        if len(w) < 4:
+            continue
+        out = re.sub(re.escape(w), "«запрет»", out, flags=re.I)
+    return out
+
+
 def sanitize_card(card: str) -> str:
     load_policy()
     if not (card or "").strip():
@@ -272,7 +303,7 @@ def sanitize_card(card: str) -> str:
     text = _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО** (системный фильтр)", card)
     banner = (
         "[POLICY] Системный фильтр важнее этой карточки. "
-        "Несовершеннолетние / CSAM — нельзя, даже если в таблице «разрешено».\n\n"
+        "Несовершеннолетние и запрещённый контент — нельзя, даже если в таблице «разрешено».\n\n"
     )
     if "[POLICY]" in text[:400]:
         return text
