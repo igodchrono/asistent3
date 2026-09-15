@@ -301,6 +301,23 @@ class PluginImpl(Plugin):
         return "qwen"
 
 
+    def _about_character(self, request: str, name: str = "") -> bool:
+        """Картинку про персонажа чата — только если в запросе явно про неё."""
+        low = (request or "").lower()
+        tokens = []
+        cid = (name or "").strip().lower()
+        if cid:
+            tokens.extend({cid, cid.rstrip("аяуюи")})
+        tokens.extend(("лисичка", "лисичку", "лисичке", "лисички", "мила", "милу", "миле", "милы"))
+        if any(t and len(t) >= 3 and t in low for t in tokens):
+            return True
+        return bool(re.search(
+            r"(нарисуй|сгенерируй|сделай картин|сделай изображ).{0,32}(себя|тебя)|"
+            r"\b(себя|тебя)\s+(в|на|у|как|рядом)|"
+            r"(как ты выгля|в сво[её]м образе|этот персонаж|эту героин)",
+            low,
+        ))
+
     def _char_look(self, app) -> str:
         name = ""
         try:
@@ -352,29 +369,32 @@ class PluginImpl(Plugin):
 
     async def _llm_prompts_then_card(self, app, request: str, refs: list) -> str:
         name, look = self._char_look(app)
-        nsfw = False
-        try:
-            from core._guard import character_is_nsfw
-            nsfw = bool(character_is_nsfw(app))
-        except Exception:
-            nsfw = bool(app.state.get("character_nsfw"))
+        about = self._about_character(request, name)
+        if about:
+            subject = (
+                f"Запрос про персонажа чата «{name}». Внешность только из карточки:\n{look}\n"
+                "Её и рисуй, если пользователь не назвал другого героя."
+            )
+        else:
+            subject = (
+                f"Запрос НЕ про персонажа чата («{name}»). "
+                "НЕ вставляй её имя, уши, хвост, рыжие волосы и внешность. "
+                "Рисуй только то, что в запросе пользователя."
+            )
         system = (
             "Ты редактор промптов для генерации изображений. "
-            "Пользователь описал сцену на русском. НЕ копируй его фразу целиком. "
-            "Переведи сцену в нормальный визуальный промпт: поза, одежда, место, свет, ракурс. "
-            "Персонаж всегда тот же. "
+            "Пользователь описал сцену. НЕ копируй его фразу целиком. "
+            "Переведи в визуальный промпт: кто на кадре, поза, одежда, место, свет, ракурс. "
             "Верни ТОЛЬКО JSON без markdown:\n"
             '{"qwen":"...","sdxl":"...","z":"...","qwen_edit":"..."}\n'
             "qwen — 1–3 предложения естественным языком (RU или EN), детальная сцена.\n"
             "sdxl — теги через запятую, английский, без предложений.\n"
             "z — короткое английское описание + ключевые детали.\n"
             "qwen_edit — инструкция правки кадра (если есть референс), иначе пустая строка.\n"
-            "Внешность и границы сцены — из карточки персонажа, без своих запретов сверху.\n"
-            "Не копируй фразу пользователя целиком. Нельзя писать 'на котором ты'."
+            "Нельзя писать 'на котором ты'. Герой картинки = герой запроса, не собеседник из чата."
         )
         user = (
-            f"Персонаж: {name}\nВнешность/карточка:\n{look}\n"
-            f"Карточка nsfw: {'да' if nsfw else 'нет'}\n"
+            f"{subject}\n"
             f"Референс приложен: {'да' if refs else 'нет'}\n"
             f"Запрос пользователя: {request}\n"
             "Собери три разных промпта под модели."
@@ -443,34 +463,34 @@ class PluginImpl(Plugin):
         fam = family or str(app.state.get("imggen_family") or app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
         fam = self._family(fam)
         scene = self._user_scene(raw)
+        name, look = self._char_look(app)
+        about = self._about_character(raw, name)
         refs = bool(app.state.get("imggen_refs") or self._refs(app))
         if fam == "qwen_edit" or (fam == "qwen" and refs):
             if not scene:
-                scene = "аккуратно отредактируй кадр, сохрани лицо и характер"
+                scene = "аккуратно отредактируй кадр"
+            keep = "Сохрани людей и композицию кадра." if not about else f"Сохрани героиню ({name}) и композицию."
             return (
-                "Отредактируй это изображение. Сохрани ту же героиню и композицию, "
-                f"если не сказано иначе. Задача: {scene}. "
-                "Стиль: аниме, чистое лицо, без водяных знаков."
+                f"Отредактируй это изображение. {keep} "
+                f"Задача: {scene}. Без водяных знаков."
             )
-        if fam == "qwen":
-            if not scene:
-                scene = "стоит у окна и смотрит наружу, полный рост"
-            return (
-                f"Аниме-иллюстрация. {self._look_qwen()}. Сцена: {scene}. "
-                "Качественный свет, цельные руки, без текста на картинке."
-            )
-        if fam == "sdxl":
-            prefix = str(app.get_plugin_setting(self.id, "positive_prefix", "masterpiece, best quality, anime") or "")
-            tags = "fox girl, orange long hair, fox ears, fluffy tail, blue eyes"
-            sc = scene or "full body, looking out the window"
-            return f"{prefix}, {tags}, {sc}, detailed background"
-        # z-image: короче, почти как qwen, без sd-тегов
         if not scene:
-            scene = "full body portrait by the window"
-        return (
-            f"anime fox girl with orange hair and tail, {scene}, "
-            "clean lineart, high detail, no watermark"
-        )
+            scene = "четкий кадр, хороший свет"
+        if fam == "qwen":
+            if about:
+                return (
+                    f"Иллюстрация. Герой: {look[:240]}. Сцена: {scene}. "
+                    "Цельные руки, без текста на картинке."
+                )
+            return f"Иллюстрация. Сцена: {scene}. Без текста на картинке."
+        if fam == "sdxl":
+            prefix = str(app.get_plugin_setting(self.id, "positive_prefix", "masterpiece, best quality") or "")
+            if about:
+                return f"{prefix}, {self._look_qwen()}, {scene}, detailed background"
+            return f"{prefix}, {scene}, detailed background"
+        if about:
+            return f"anime fox girl with orange hair and tail, {scene}, clean lineart, high detail, no watermark"
+        return f"{scene}, clean illustration, high detail, no watermark"
 
     def _refs(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])
