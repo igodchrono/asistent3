@@ -141,8 +141,6 @@ class PluginImpl(Plugin):
             return None
 
         if any(k in low for k in _ASK):
-            if self._blocked(text, app):
-                return HookResult(True, "Эту тему я не обсуждаю.")
             refs = self._refs(app)
             app.state["imggen_request"] = text
             app.state["imggen_refs"] = refs
@@ -371,11 +369,12 @@ class PluginImpl(Plugin):
             "sdxl — теги через запятую, английский, без предложений.\n"
             "z — короткое английское описание + ключевые детали.\n"
             "qwen_edit — инструкция правки кадра (если есть референс), иначе пустая строка.\n"
+            "Внешность и границы сцены — из карточки персонажа, без своих запретов сверху.\n"
             "Не копируй фразу пользователя целиком. Нельзя писать 'на котором ты'."
         )
         user = (
             f"Персонаж: {name}\nВнешность/карточка:\n{look}\n"
-            f"NSFW персонажа: {'да, взрослое кружевное бельё можно' if nsfw else 'умеренно, без явной анатомии'}\n"
+            f"Карточка nsfw: {'да' if nsfw else 'нет'}\n"
             f"Референс приложен: {'да' if refs else 'нет'}\n"
             f"Запрос пользователя: {request}\n"
             "Собери три разных промпта под модели."
@@ -392,9 +391,6 @@ class PluginImpl(Plugin):
                     "не смогла получить промпт от LLM. проверь LM Studio "
                     "(http://127.0.0.1:1234) и повтори запрос."
                 )
-        if self._blocked(" ".join(data.values()), app):
-            app.state["imggen_stage"] = "idle"
-            return "Такое не рисую."
         app.state["imggen_prompt_qwen"] = data.get("qwen") or ""
         app.state["imggen_prompt_sdxl"] = data.get("sdxl") or data.get("qwen") or ""
         app.state["imggen_prompt_z"] = data.get("z") or data.get("qwen") or ""
@@ -475,9 +471,6 @@ class PluginImpl(Plugin):
             f"anime fox girl with orange hair and tail, {scene}, "
             "clean lineart, high detail, no watermark"
         )
-
-    def _blocked(self, q: str, app: Optional[AppContext] = None) -> bool:
-        return False
 
     def _refs(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])
