@@ -27,6 +27,19 @@ intent:
 - fetch_url — скачать конкретную ссылку (картинка/текст/pdf/json) в чат. args: {"url":"https://..."}
 - open_last_search — то же что download_image (картинки) или fetch_page (сайты), НЕ открывать поиск заново
 
+- imggen — СОЗДАТЬ новую картинку (ComfyUI), не искать в гугле.
+  Триггеры: нарисуй, сгенерируй, создай картинку, сделай арт, изобрази, представь в виде, draw, generate.
+  НЕ web_search. args: {"prompt":"<сцена>","negative":"","size":"square|portrait|landscape"}
+- imggen_edit — править уже загруженную/сгенерированную картинку.
+  Триггеры: переделай, измени картинку, дорисуй, перекрась, добавь на картинке, в стиле.
+  args: {"prompt":"...","source":"last|uploaded|generated"}
+
+- text_edit — править загруженный текст (txt/md/docx/pdf).
+  Триггеры: перепиши, отредактируй, сократи, исправь ошибки, переведи, измени стиль, в официальном стиле.
+  args: {"instruction":"<что сделать>","target":"last_upload"}
+- file_list — «покажи мои файлы», «что я загружал»
+- file_get — «дай ссылку на файл». args: {"file_id":"..."}
+
 - memory_add / memory_list / memory_forget
 - note_add / note_list / note_find
 - reminder_add / reminder_list
@@ -47,6 +60,9 @@ intent:
 - mode=video если: видео, youtube, ютуб, ролик
 
 НЕ web_search:
+- «нарисуй / сгенерируй / сделай арт / изобрази / draw» → imggen (не mode=images)
+- «переделай / дорисуй картинку» → imggen_edit
+- «перепиши / сократи / исправь текст» при загруженном файле → text_edit
 - «что такое asyncio» / «объясни» / «расскажи» → chat (ответь сам)
 - «опиши закат» / «напиши стих» → chat
 - «найди файл X» / «найди папку» → pc_search_files / pc_search_folders
@@ -102,6 +118,10 @@ class ChatEngine:
             "last_search_mode": str(st.get("last_search_mode") or ""),
             "last_search_n": len(st.get("last_search_results") or []),
             "pending_similar": bool(st.get("screen_vision_pending_similar")),
+            "imggen_stage": str(st.get("imggen_stage") or ""),
+            "last_upload_id": str(st.get("last_upload_id") or ""),
+            "has_upload": bool(st.get("last_upload_id") or st.get("uploads")),
+            "has_last_image": bool(st.get("phone_media_last")),
             "character": str(
                 self.app.get_active_character()
                 if hasattr(self.app, "get_active_character")
@@ -217,6 +237,14 @@ class ChatEngine:
 
     def _run_tool(self, intent: str, args: Dict[str, Any]) -> Optional[str]:
         tools = self.app.tools or {}
+        args = dict(args or {})
+        if intent == "imggen_edit":
+            args.setdefault("source", "last")
+        if intent in ("imggen", "imggen_edit"):
+            if not args.get("prompt"):
+                args["prompt"] = args.get("text") or args.get("query") or ""
+        if intent == "text_edit" and not args.get("instruction"):
+            args["instruction"] = args.get("text") or args.get("query") or ""
         # алиасы intent → tool name
         alias = {
             "describe_screen": "describe_screen",
@@ -246,6 +274,12 @@ class ChatEngine:
             "pc_recycle": "pc_recycle",
             "pc_empty_recycle": "pc_empty_recycle",
             "deep_think": "deep_think",
+            "imggen": "generate_image",
+            "imggen_edit": "generate_image",
+            "text_edit": "edit_uploaded",
+            "file_list": "list_uploads",
+            "file_get": "get_file_link",
+            "read_uploaded": "read_uploaded",
         }
         name = alias.get(intent)
         if not name:

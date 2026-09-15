@@ -309,7 +309,7 @@ class ChatWindow(QtWidgets.QMainWindow):
             self,
             "Файл для чата / анализа",
             "",
-            "Все (*);;Картинки (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;Текст (*.txt *.md *.json *.csv *.py *.log)",
+            "Все (*);;Текст (*.txt *.md *.json *.csv *.py *.log *.docx *.pdf);;Картинки (*.png *.jpg *.jpeg *.gif *.webp *.bmp)",
         )
         if not paths:
             return

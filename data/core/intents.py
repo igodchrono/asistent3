@@ -29,6 +29,21 @@ _WEB_VERBS = (
 )
 _IMG = ("картин", "фото", "изображ", "обои", "арт ", "art", "image", "wallpaper", "скрин")
 _VID = ("видео", "youtube", "ютуб", "ролик", "клип")
+_GEN_VERBS = (
+    "нарисуй", "сгенерируй", "создай картин", "сделай картин", "сделай арт",
+    "изобрази", "представь в виде", "draw ", "draw a", "generate an image", "generate a picture",
+)
+_EDIT_IMG = (
+    "переделай", "дорисуй", "перекрась", "измени картин", "добавь на картин",
+    "поправь картин", "отредактируй картин",
+)
+_EDIT_TEXT = (
+    "перепиши", "отредактируй", "сократи", "исправь ошибки", "исправь текст",
+    "переведи", "измени стиль", "официальном стиле", "официальный стиль",
+)
+_SEARCH_FIRST = (
+    "найди", "поищи", "погугли", "загугли", "скинь", "где найти", "покажи примеры",
+)
 _DISK = re.compile(
     r"(?:диск[аеу]?\s+[A-Za-z]\b|\b[A-Za-z]:(?:\\|/|\s|$)|в\s+проводнике|на\s+компьютере|локальн)",
     re.I,
@@ -111,8 +126,8 @@ def is_web_search(low: str) -> bool:
         return True
     if any(w in low for w in ("погугли", "загугли")):
         return True
-    if any(v in low for v in ("найди", "поищи", "покажи", "скинь")) and any(
-        w in low for w in _IMG + _VID + ("в интернете", "в сети", "статью", "информац")
+    if any(v in low for v in ("найди", "поищи", "покажи", "скинь")) and (
+        any(w in low for w in _IMG + _VID + ("в интернете", "в сети", "статью", "информац", "пример"))
     ):
         return True
     if re.search(r"\b(курс\s+доллара|погода\s+(сегодня|завтра)|новости)\b", low):
@@ -179,6 +194,33 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
     if is_new_similar(low):
         kind = "image" if any(w in low for w in _IMG) else "generic"
         return {"intent": "search_similar", "args": {"kind": kind}, "speak": ""}
+
+    search_first = any(w in low for w in _SEARCH_FIRST) or (
+        "покажи" in low and any(w in low for w in _IMG + _VID)
+    )
+    if any(w in low for w in _EDIT_IMG) or (
+        "в стиле" in low and (ctx.get("has_last_image") or any(w in low for w in _IMG))
+    ):
+        if ctx.get("has_last_image") or any(w in low for w in _IMG):
+            prompt = strip_search_fluff(raw)
+            return {"intent": "imggen_edit", "args": {"prompt": prompt, "source": "last"}, "speak": ""}
+    if (not search_first) and any(w in low for w in _GEN_VERBS):
+        prompt = strip_search_fluff(raw)
+        for v in ("нарисуй", "сгенерируй", "изобрази", "draw", "generate"):
+            prompt = re.sub(r"^" + re.escape(v) + r"\s+", "", prompt, flags=re.I)
+        return {"intent": "imggen", "args": {"prompt": prompt or raw, "size": "square"}, "speak": ""}
+
+    if any(w in low for w in ("покажи мои файлы", "что я загружал", "список загрузок", "мои загрузки")):
+        return {"intent": "file_list", "args": {}, "speak": ""}
+    if ctx.get("has_upload") or ctx.get("last_upload_id"):
+        if any(w in low for w in _EDIT_TEXT) or low.startswith("перепиши") or low.startswith("сократи"):
+            return {
+                "intent": "text_edit",
+                "args": {"instruction": raw, "target": "last_upload"},
+                "speak": "",
+            }
+        if any(w in low for w in ("дай ссылку", "ссылка на файл", "открой загруженн")):
+            return {"intent": "file_get", "args": {"file_id": str(ctx.get("last_upload_id") or "")}, "speak": ""}
 
     if any(w in low for w in (
         "открой ее", "открой её", "открой эту", "открой выбранн",
@@ -310,6 +352,17 @@ if __name__ == "__main__":
         ("закрой калькулятор", "pc_close", {}),
         ("мне скучно", None, {}),
         ("найди что-то интересное", "web_search", {}),
+        ("нарисуй рыжего кота", "imggen", {}),
+        ("сгенерируй картинку замка", "imggen", {}),
+        ("сделай арт киберпанк город", "imggen", {}),
+        ("изобрази закат над морем", "imggen", {}),
+        ("draw a red car", "imggen", {}),
+        ("найди картинки рыжих кошек", "web_search", {}),
+        ("поищи фото Токио", "web_search", {}),
+        ("скинь примеры логотипов", "web_search", {}),
+        ("переделай последнюю картинку, добавь дождь", "imggen_edit", {"has_last_image": True}),
+        ("перепиши в официальном стиле", "text_edit", {"has_upload": True, "last_upload_id": "x.txt"}),
+        ("покажи мои файлы", "file_list", {"has_upload": True}),
     ]
     fail = 0
     for phrase, expect, ctx in CASES:

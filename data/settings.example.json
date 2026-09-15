@@ -20,6 +20,7 @@
     "reminders": true,
     "memory": true,
     "deep_think": true,
+    "files": true,
     "screen_react": false,
     "avatar": false,
     "emotion": false,

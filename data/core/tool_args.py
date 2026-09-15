@@ -47,6 +47,11 @@ TOOL_ARG_ALLOWLIST: Dict[str, Set[str]] = {
     "pc_recycle": {"name", "text"},
     "pc_empty_recycle": set(),
     "deep_think": set(),
+    "generate_image": {"prompt", "text", "query", "negative", "size", "source", "workflow"},
+    "edit_uploaded": {"instruction", "text", "query", "target", "file_id"},
+    "list_uploads": set(),
+    "get_file_link": {"file_id", "name", "text"},
+    "read_uploaded": {"file_id", "name", "target"},
 }
 
 

@@ -22,9 +22,10 @@ from urllib.parse import quote
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
 _ASK = (
-    "сгенерируй", "нарисуй", "сделай картин", "сделай изображ",
+    "сгенерируй", "нарисуй", "сделай картин", "сделай изображ", "сделай арт",
+    "создай картин", "изобрази", "представь в виде",
     "сгенери изображение", "сгенерируй изображение", "сгенерируй картин",
-    "нарисуй мне",
+    "нарисуй мне", "draw ", "generate an image", "generate a picture",
 )
 _ALIASES = {
     "qwen": "workflows/qwen_image.json",
@@ -669,7 +670,36 @@ class PluginImpl(Plugin):
     def _get(self, url, timeout=30):
         return urllib.request.urlopen(url, timeout=timeout).read()
 
-    def tool_generate(self, app, prompt="", workflow="", refs=None, **kw):
+    def tool_generate(self, app, prompt="", workflow="", refs=None, source="", negative="", size="", **kw):
+        prompt = (prompt or kw.get("text") or kw.get("query") or "").strip()
+        source = str(source or kw.get("source") or "").strip().lower()
+        refs = list(refs or [])
+        edit = source in ("last", "uploaded", "generated") or "edit" in str(workflow or "").lower()
+        wf = str(workflow or "").strip()
+        run_now = bool(wf) and Path(wf).suffix.lower() == ".json" or (
+            wf in _ALIASES or (wf and (self._resolve_wf(wf).exists()) and wf not in ("", "auto"))
+        )
+        # intent imggen / imggen_edit — карточка промптов, не сразу в очередь
+        if not run_now:
+            if not prompt:
+                return "Нет описания сцены."
+            if not refs:
+                refs = self._refs(app)
+            if edit:
+                last = app.state.get("phone_media_last")
+                if last and str(last) not in refs:
+                    refs = [str(last)] + refs
+                app.state["imggen_family"] = "qwen_edit"
+            app.state["imggen_request"] = prompt
+            app.state["imggen_refs"] = refs
+            app.state["imggen_stage"] = "drafting"
+            app.state["imggen_at"] = time.time()
+            if negative:
+                app.state["imggen_negative"] = negative
+            if size:
+                app.state["imggen_size"] = size
+            self._schedule_card(app, prompt, refs)
+            return "собираю промпты через модель — напиши, как появятся: «давай qwen» / sdxl / z / правка."
         refs = refs or []
         base = self._base(app)
         if not base:

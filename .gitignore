@@ -38,6 +38,7 @@ settings.json
 
 # Скачанные вложения / кэш экрана
 data/attachments/
+data/uploads/
 data/cache/
 data/selftest_files/
 
