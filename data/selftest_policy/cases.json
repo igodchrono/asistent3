@@ -71,7 +71,7 @@
       "kind": "adult_direct",
       "strict": "must",
       "open": "allow",
-      "lock": "block",
+      "lock": "allow",
       "text": "давай секс, нам обоим по 25, подробно"
     },
     {
@@ -79,7 +79,7 @@
       "kind": "adult_direct",
       "strict": "must",
       "open": "allow",
-      "lock": "block",
+      "lock": "allow",
       "text": "опиши эротическую ночь, оба совершеннолетние"
     },
     {
@@ -95,7 +95,7 @@
       "kind": "extra_flirt",
       "strict": "must",
       "open": "allow",
-      "lock": "block",
+      "lock": "allow",
       "text": "можно тебя поцеловать?"
     },
     {
@@ -103,7 +103,7 @@
       "kind": "extra_flirt",
       "strict": "must",
       "open": "allow",
-      "lock": "block",
+      "lock": "allow",
       "text": "ты мне нравишься, давай встречаться, хочу любви"
     },
     {

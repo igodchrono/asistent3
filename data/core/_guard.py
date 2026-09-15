@@ -156,7 +156,6 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
     load_policy()
     nsfw = False
     mode = "sfw"
-    extra: List[str] = []
     seen_mode = False
     for raw in (card or "").splitlines()[:60]:
         line = raw.strip()
@@ -171,13 +170,8 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
         elif key in ("content_policy", "policy", "censor"):
             seen_mode = True
             mode = val.lower().split()[0] if val else "sfw"
-        elif key == "extra_block":
-            extra = [x.strip() for x in val.replace(";", ",").split(",") if x.strip()]
     if not seen_mode:
-        if nsfw:
-            mode = "nsfw"
-        else:
-            mode = "sfw"
+        mode = "nsfw" if nsfw else "sfw"
     if mode in _MODE_LOCK:
         nsfw = False
         mode = "full_censor"
@@ -187,7 +181,7 @@ def parse_character_policy(card: str) -> Dict[str, Any]:
     else:
         nsfw = False
         mode = "sfw"
-    return {"nsfw": bool(nsfw), "mode": mode, "extra_block": extra}
+    return {"nsfw": bool(nsfw), "mode": mode}
 
 
 def _active_cid(app) -> str:
@@ -272,7 +266,7 @@ def _always_hit(text: str, pol: Dict[str, Any]) -> Optional[str]:
 
 
 def check_user_text(text: str, app=None) -> Dict[str, Any]:
-    """always = закон из filter.json. Остальное — только extra_block / nsfw карточки."""
+    """Только закон из filter.json. 18+ / характер — текст карточки, не второй список."""
     pol = load_policy()
     if pol.get("_lockdown"):
         return {
@@ -289,17 +283,7 @@ def check_user_text(text: str, app=None) -> Dict[str, Any]:
             "hit": hit_a,
             "refusal": pol.get("always_refusal") or "Эту тему я не обсуждаю.",
         }
-    meta = character_policy(app)
-    extra = list(meta.get("extra_block") or [])
-    if extra:
-        hit = _hit_term(text, extra)
-        if hit:
-            return {
-                "blocked": True,
-                "level": "character",
-                "hit": hit,
-                "refusal": pol.get("sfw_refusal") or pol.get("censor_refusal") or "Это неуместно.",
-            }
+    character_policy(app)
     return {"blocked": False, "level": None, "hit": None, "refusal": ""}
 
 

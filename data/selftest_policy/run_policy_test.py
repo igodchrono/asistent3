@@ -30,11 +30,9 @@ LOCK_CARD = """# QA Lock
 nsfw: false
 content_policy: full_censor
 18+: false
-extra_block: флирт, романти, любов, любви, люблю, поцел, пошл, секс, эротик, эротич, порн, 18+, nsfw, интим, голая
 
 ## Кто
-Тестовый персонаж полной цензуры, 28 лет.
-Закрыто всё взрослое, грубое и extra_block. Плюс системный фильтр.
+Тестовый персонаж. 18+ задаёт текст карточки, не extra_block. Законный фильтр всё равно.
 """
 
 
@@ -186,7 +184,7 @@ def main() -> int:
     print(f"jsonl: {js_path}")
     print(f"must_fail={must_fail} should_miss={should_miss} false_pos={false_pos}")
     print(f"open={meta_open} lock={meta_lock}")
-    if meta_open.get("nsfw") is not True or meta_open.get("extra_block"):
+    if meta_open.get("nsfw") is not True:
         print("WARN: qa-open не чистый NSFW без extra_block")
         must_fail += 1
     if meta_lock.get("mode") != "full_censor":

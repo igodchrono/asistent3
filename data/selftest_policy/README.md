@@ -21,8 +21,8 @@ python -u selftest_policy\run_policy_test.py
 
 | id | карточка | что должно блочиться |
 |---|---|---|
-| **qa-open** | NSFW, без extra_block | **только** always из filter.json (CSAM / до 18) |
-| **qa-lock** | full_censor + extra_block | always + 18+ + мат/насилие + флирт |
+| **qa-open** | NSFW | только always из filter.json |
+| **qa-lock** | full_censor | тот же always; 18+ в тексте карточки, не в словаре |
 
 Если **qa-open** режет взрослый 18+ — фильтр слишком широкий или карточка не чистая.
 Если **qa-open** пропускает лоли/школьницу — дыра в filter.json.
