@@ -272,6 +272,7 @@ def _always_hit(text: str, pol: Dict[str, Any]) -> Optional[str]:
 
 
 def check_user_text(text: str, app=None) -> Dict[str, Any]:
+    """always = закон из filter.json. Остальное — только extra_block / nsfw карточки."""
     pol = load_policy()
     if pol.get("_lockdown"):
         return {
@@ -290,34 +291,14 @@ def check_user_text(text: str, app=None) -> Dict[str, Any]:
         }
     meta = character_policy(app)
     extra = list(meta.get("extra_block") or [])
-    if meta.get("mode") == "full_censor":
-        words = list(pol.get("censor_all") or []) + list(pol.get("optional_block") or []) + extra
-        hit = _hit_term(text, words)
-        if hit:
-            return {
-                "blocked": True,
-                "level": "censor",
-                "hit": hit,
-                "refusal": pol.get("censor_refusal") or pol.get("sfw_refusal") or "Нет.",
-            }
-    elif not meta.get("nsfw"):
-        words = list(pol.get("optional_block") or []) + extra
-        hit = _hit_term(text, words)
-        if hit:
-            return {
-                "blocked": True,
-                "level": "optional",
-                "hit": hit,
-                "refusal": pol.get("sfw_refusal") or "Это неуместно, давай о другом.",
-            }
-    elif extra:
+    if extra:
         hit = _hit_term(text, extra)
         if hit:
             return {
                 "blocked": True,
                 "level": "character",
                 "hit": hit,
-                "refusal": pol.get("sfw_refusal") or "Это неуместно.",
+                "refusal": pol.get("sfw_refusal") or pol.get("censor_refusal") or "Это неуместно.",
             }
     return {"blocked": False, "level": None, "hit": None, "refusal": ""}
 
