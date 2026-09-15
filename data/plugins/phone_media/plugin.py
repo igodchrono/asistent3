@@ -477,12 +477,7 @@ class PluginImpl(Plugin):
         )
 
     def _blocked(self, q: str, app: Optional[AppContext] = None) -> bool:
-        try:
-            from core._guard import check_user_text
-            r = check_user_text(q or "", app if app is not None else self.app)
-            return bool(r.get("blocked"))
-        except Exception:
-            return True
+        return False
 
     def _refs(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])

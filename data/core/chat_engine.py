@@ -310,16 +310,6 @@ class ChatEngine:
             print(f"memory record: {e}", flush=True)
 
     def _filter_out(self, text: str) -> str:
-        try:
-            from core._guard import check_assistant_text
-            leak = check_assistant_text(text, self.app)
-        except Exception as e:
-            print(f"policy after: {e}", flush=True)
-            return text
-        if leak.get("blocked"):
-            self.app.state["assistant_replaced"] = True
-            print(f"policy: stripped assistant leak={leak.get('level')} hit={leak.get('hit')!r}", flush=True)
-            return str(leak.get("refusal") or "Эту тему я не обсуждаю.")
         return text
 
     def _trim_history(self) -> None:
@@ -422,30 +412,6 @@ class ChatEngine:
     async def handle_user(self, text: str) -> AsyncIterator[str]:
         text = (text or "").strip()
         if not text:
-            return
-        try:
-            from core._guard import check_user_text
-            chk = check_user_text(text, self.app)
-        except Exception as e:
-            print(f"policy check: {e}", flush=True)
-            chk = {
-                "blocked": True,
-                "level": "always",
-                "hit": "policy_error",
-                "refusal": "Сейчас не могу это обработать.",
-            }
-        if chk.get("blocked"):
-            reply = str(chk.get("refusal") or "Нет.").strip()
-            # always-block: не кладём запрос в память
-            if chk.get("level") != "always":
-                self.history.append({"role": "user", "content": text})
-                self._remember("user", text)
-                self._trim_history()
-            self.history.append({"role": "assistant", "content": reply})
-            self._remember("assistant", reply)
-            self._trim_history()
-            print(f"policy: block level={chk.get('level')} hit={chk.get('hit')!r}", flush=True)
-            yield reply
             return
         self.history.append({"role": "user", "content": text})
         self._remember("user", text)
@@ -669,11 +635,4 @@ class ChatEngine:
             print(f"proactive: {e}", flush=True)
             return ""
         text = self._strip_anim_for_chat(raw or "")
-        try:
-            from core._guard import check_assistant_text
-            leak = check_assistant_text(text, self.app)
-            if leak.get("blocked"):
-                return ""
-        except Exception:
-            pass
         return text
