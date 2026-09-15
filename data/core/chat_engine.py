@@ -584,9 +584,9 @@ class ChatEngine:
         except Exception as e:
             print(f"policy: {e}", flush=True)
             if self.app.state.get("character_nsfw") is False:
-                system += "\n\n[POLICY SFW] Отказ на 18+."
+                system += "\n\nПерсонаж SFW: без секс-сцен, по тексту карточки."
             elif self.app.state.get("character_nsfw") is True:
-                system += "\n\n[POLICY NSFW] 18+ по запросу можно. Системный фильтр — всегда."
+                system += "\n\nПерсонаж взрослый: 18+ по запросу можно, в характере карточки."
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         tail = 16

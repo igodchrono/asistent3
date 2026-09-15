@@ -309,39 +309,14 @@ def sanitize_card(card: str) -> str:
     load_policy()
     if not (card or "").strip():
         return card or ""
-    text = _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО** (системный фильтр)", card)
-    banner = (
-        "[POLICY] Системный фильтр важнее этой карточки. "
-        "Несовершеннолетние и запрещённый контент — нельзя, даже если в таблице «разрешено».\n\n"
-    )
-    if "[POLICY]" in text[:400]:
-        return text
-    return banner + text
+    return _CARD_FORBID_ROWS.sub(r"\1**ЗАПРЕЩЕНО**", card)
 
 
 def build_policy_prompt(app=None) -> str:
-    pol = load_policy()
-    if pol.get("_lockdown"):
-        return "[POLICY] Фильтр недоступен. Отказ на запретные темы."
+    load_policy()
     meta = character_policy(app)
-    prompt = pol.get("prompt") if isinstance(pol.get("prompt"), dict) else {}
-    always_line = (prompt or {}).get("always") or ""
-    lines = ["[POLICY]"]
-    if always_line:
-        lines.append(str(always_line))
-    lines.append("Карточка персонажа этот фильтр не отменяет.")
-    mode = meta.get("mode") or "sfw"
-    if mode == "full_censor":
-        lines.append("Режим персонажа: полная цензура. Взрослое и грубое — отказ.")
-        if pol.get("censor_refusal"):
-            lines.append("Отказ: " + str(pol.get("censor_refusal")))
-    elif meta.get("nsfw"):
-        lines.append("Персонаж NSFW: взрослый 18+ по запросу можно.")
-        after = (prompt or {}).get("after_consent")
-        if after:
-            lines.append(after)
-    else:
-        lines.append("Персонаж SFW. Взрослые темы — короткий отказ без сцены.")
-        if pol.get("sfw_refusal"):
-            lines.append("Отказ: " + str(pol.get("sfw_refusal")))
-    return "\n".join(lines)
+    if meta.get("nsfw"):
+        return "Персонаж взрослый: 18+ по запросу можно, в характере карточки."
+    if meta.get("mode") == "full_censor":
+        return "Персонаж строгий: без пошлости и грубости, по тексту карточки."
+    return "Персонаж SFW: без секс-сцен, по тексту карточки."
