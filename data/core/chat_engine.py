@@ -39,6 +39,8 @@ intent:
   args: {"instruction":"<что сделать>","target":"last_upload"}
 - file_list — «покажи мои файлы», «что я загружал»
 - file_get — «дай ссылку на файл». args: {"file_id":"..."}
+- save_file — положить готовый текст/код в чат как файл. Триггеры: скинь файлом, сохрани в файл, дай файлом.
+  args: {"name":"player.js","content":"..."}  (content можно не слать — берётся последний ответ)
 
 - memory_add / memory_list / memory_forget
 - note_add / note_list / note_find
@@ -245,6 +247,13 @@ class ChatEngine:
                 args["prompt"] = args.get("text") or args.get("query") or ""
         if intent == "text_edit" and not args.get("instruction"):
             args["instruction"] = args.get("text") or args.get("query") or ""
+        if intent in ("save_file", "send_file"):
+            if not args.get("content"):
+                for m in reversed(self.history or []):
+                    if m.get("role") == "assistant":
+                        args["content"] = m.get("content") or ""
+                        break
+            args.setdefault("name", args.get("file") or "")
         # алиасы intent → tool name
         alias = {
             "describe_screen": "describe_screen",
@@ -280,6 +289,8 @@ class ChatEngine:
             "file_list": "list_uploads",
             "file_get": "get_file_link",
             "read_uploaded": "read_uploaded",
+            "save_file": "send_file",
+            "send_file": "send_file",
         }
         name = alias.get(intent)
         if not name:

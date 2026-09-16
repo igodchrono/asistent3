@@ -31,6 +31,7 @@ _TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".y
 _ANIM_RE = re.compile(r"\[ANIM:[a-zA-Z0-9_]+\]", re.I)
 _FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)\r?\n?(.*?)```", re.S)
 _INLINE_RE = re.compile(r"`([^`\n]+)`")
+_FILE_MARK_RE = re.compile(r"\[(?:фото|файл):\s*([^\]]+)\]", re.I)
 
 
 def _keep_lines(text: str) -> str:
@@ -329,6 +330,21 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._append_sys(f"Скопировано в {dest_dir}: {len(paths)} файл(ов)")
 
     def _on_anchor(self, url: QtCore.QUrl) -> None:
+        if url.scheme() == "asistent":
+            q = QtCore.QUrlQuery(url)
+            raw = q.queryItemValue("p")
+            path = Path(raw) if raw else Path()
+            if url.host() == "save" and path.is_file():
+                dest, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    self, "Сохранить файл", path.name, "Все (*)"
+                )
+                if dest:
+                    try:
+                        shutil.copy2(path, dest)
+                        self._append_sys(f"Сохранено: {dest}")
+                    except Exception as e:
+                        self._append_sys(f"Не сохранилось: {e}")
+                return
         path = Path(url.toLocalFile() or "")
         if not path.exists():
             s = url.toString()
@@ -343,18 +359,48 @@ class ChatWindow(QtWidgets.QMainWindow):
         return _format_chat_html(text or "")
 
     def _html_file(self, path: Path) -> str:
+        path = Path(path)
+        if not path.exists():
+            return f'<div style="margin:6px 0;color:#888;">файл не найден: {html.escape(path.name)}</div>'
         uri = path.resolve().as_uri()
         name = html.escape(path.name)
+        size = path.stat().st_size
+        if size >= 1048576:
+            sz = f"{size/1048576:.1f} МБ"
+        elif size >= 1024:
+            sz = f"{size/1024:.1f} КБ"
+        else:
+            sz = f"{size} байт"
+        q = QtCore.QUrl("asistent://save")
+        qq = QtCore.QUrlQuery()
+        qq.addQueryItem("p", str(path.resolve()))
+        q.setQuery(qq)
+        save = html.escape(q.toString())
         if _is_image(path):
             return (
                 f'<div style="margin:6px 0;">'
                 f'<a href="{uri}" title="открыть на весь экран">'
                 f'<img src="{uri}" width="220" style="border-radius:8px; border:1px solid #555;" />'
-                f"</a><br><span style='color:#888;font-size:11px;'>🖼 {name} — клик: полный экран</span></div>"
+                f"</a><br><span style='color:#888;font-size:11px;'>🖼 {name} · {sz} · "
+                f'<a href="{save}" style="color:#9cf;">сохранить как</a></span></div>'
             )
         return (
-            f'<div style="margin:6px 0;"><a href="{uri}" style="color:#9cf;">📄 {name}</a></div>'
+            f'<div style="margin:6px 0;padding:8px 10px;border:1px solid #555;border-radius:8px;'
+            f'background:#333;display:inline-block;">'
+            f'<a href="{uri}" style="color:#9cf;font-weight:bold;">📄 {name}</a>'
+            f'<span style="color:#888;font-size:11px;"> · {sz} · </span>'
+            f'<a href="{save}" style="color:#9cf;font-size:11px;">сохранить как</a></div>'
         )
+
+    def _pull_file_marks(self, text: str) -> tuple[str, str]:
+        extra = ""
+        raw = text or ""
+        for m in _FILE_MARK_RE.finditer(raw):
+            fp = Path(str(m.group(1)).strip().strip('"'))
+            if fp.exists():
+                extra += self._html_file(fp)
+        raw = _FILE_MARK_RE.sub("", raw)
+        return raw, extra
 
     def _append_html(self, block: str) -> None:
         self.chat.moveCursor(QtGui.QTextCursor.End)
@@ -369,16 +415,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         if who == "Ошибка":
             color = "#f66"
         text = _strip_anim(text) if who != "Вы" else (text or "")
-        body = self._html_text(text)
         extra = ""
         for p in files or []:
             extra += self._html_file(Path(p))
-        # auto-detect [фото: path] from plugins
-        for m in __import__("re").findall(r"\[фото:\s*([^\]]+)\]", text or ""):
-            fp = Path(m.strip())
-            if fp.exists():
-                extra += self._html_file(fp)
-                body = body.replace(self._html_text(f"[фото: {m.strip()}]"), "")
+        text, marks = self._pull_file_marks(text)
+        extra += marks
+        body = self._html_text(text)
         self._append_html(
             f'<div style="margin:8px 0 12px 0;"><b style="color:{color};">{html.escape(who)}</b><br>{body}{extra}</div>'
         )
@@ -447,14 +489,8 @@ class ChatWindow(QtWidgets.QMainWindow):
         bar.setValue(bar.maximum())
 
     def _finish_assistant_stream(self, replace: str | None = None) -> None:
-        raw = replace if replace else _strip_anim(getattr(self, "_stream_raw", "") or "")
-        extra = ""
         src = replace if replace else (getattr(self, "_stream_raw", "") or "")
-        for m in re.findall(r"\[фото:\s*([^\]]+)\]", src):
-            fp = Path(m.strip())
-            if fp.exists():
-                extra += self._html_file(fp)
-                raw = raw.replace(f"[фото: {m.strip()}]", "")
+        raw, extra = self._pull_file_marks(_strip_anim(src))
         try:
             cur = self.chat.textCursor()
             cur.setPosition(int(getattr(self, "_stream_pos", 0)))

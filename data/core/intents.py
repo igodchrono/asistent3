@@ -219,6 +219,17 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
             prompt = re.sub(r"^" + re.escape(v) + r"\s+", "", prompt, flags=re.I)
         return {"intent": "imggen", "args": {"prompt": prompt or raw, "size": "square"}, "speak": ""}
 
+    if any(w in low for w in (
+        "скинь файлом", "дай файлом", "сохрани в файл", "сохрани как файл",
+        "приложи файл", "в виде файла", "отправь файлом",
+    )):
+        name = ""
+        m = re.search(r"(?:как|имя|назови)\s+([A-Za-z0-9._\-]+\.[A-Za-z0-9]+)", raw, re.I)
+        if not m:
+            m = re.search(r"([A-Za-z0-9._\-]+\.[A-Za-z0-9]{1,8})\s*$", raw)
+        if m:
+            name = m.group(1)
+        return {"intent": "save_file", "args": {"name": name}, "speak": ""}
     if any(w in low for w in ("покажи мои файлы", "что я загружал", "список загрузок", "мои загрузки")):
         return {"intent": "file_list", "args": {}, "speak": ""}
     if ctx.get("has_upload") or ctx.get("last_upload_id"):
@@ -376,6 +387,8 @@ if __name__ == "__main__":
         ("переделай последнюю картинку, добавь дождь", "imggen_edit", {"has_last_image": True}),
         ("перепиши в официальном стиле", "text_edit", {"has_upload": True, "last_upload_id": "x.txt"}),
         ("покажи мои файлы", "file_list", {"has_upload": True}),
+        ("скинь файлом", "save_file", {}),
+        ("сохрани в файл как player.js", "save_file", {}),
     ]
     fail = 0
     for phrase, expect, ctx in CASES:

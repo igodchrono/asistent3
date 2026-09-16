@@ -52,6 +52,7 @@ TOOL_ARG_ALLOWLIST: Dict[str, Set[str]] = {
     "list_uploads": set(),
     "get_file_link": {"file_id", "name", "text"},
     "read_uploaded": {"file_id", "name", "target"},
+    "send_file": {"name", "content", "text", "query", "file"},
 }
 
 

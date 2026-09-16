@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import urllib.request
 from datetime import datetime
@@ -36,6 +37,7 @@ class PluginImpl(Plugin):
         app.tools["edit_uploaded"] = self.tool_edit
         app.tools["list_uploads"] = self.tool_list
         app.tools["get_file_link"] = self.tool_link
+        app.tools["send_file"] = self.tool_send
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
         self._ingest(app)
@@ -152,8 +154,46 @@ class PluginImpl(Plugin):
         rec = self._find(app, file_id or name or "")
         if not rec:
             return "Файл не найден."
-        uri = Path(rec["path"]).resolve().as_uri()
-        return f"{rec.get('name')}: {uri}"
+        return f"{rec.get('name')}: [файл: {rec['path']}]"
+
+    def tool_send(self, app: AppContext, name: str = "", content: str = "", text: str = "", **kw) -> str:
+        raw = (content or text or kw.get("query") or "").strip()
+        if not raw:
+            return "Нечего класть в файл — нет текста."
+        fence = None
+        lang = ""
+        m = re.search(r"```([a-zA-Z0-9_+-]*)\r?\n?(.*?)```", raw, re.S)
+        if m:
+            lang = (m.group(1) or "").lower()
+            fence = m.group(2)
+            raw = fence.strip("\n") if fence is not None else raw
+        fname = self._safe_name(name or kw.get("file") or "")
+        if not fname:
+            ext = {
+                "python": ".py", "py": ".py", "js": ".js", "javascript": ".js",
+                "ts": ".ts", "html": ".html", "css": ".css", "json": ".json",
+                "md": ".md", "bash": ".sh", "sh": ".sh", "cpp": ".cpp", "c": ".c",
+            }.get(lang, ".txt")
+            fname = f"note_{datetime.now().strftime('%H%M%S')}{ext}"
+        dest = self._root(app) / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}_{fname}"
+        dest.write_text(raw, encoding="utf-8")
+        rec = {
+            "id": dest.name,
+            "name": fname,
+            "path": str(dest),
+            "size": dest.stat().st_size,
+        }
+        ups = list(app.state.get("uploads") or [])
+        ups.append(rec)
+        app.state["uploads"] = ups[-40:]
+        app.state["last_upload_id"] = rec["id"]
+        return f"Файл в чате: {fname} ({rec['size']} байт)\n[файл: {dest}]"
+
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        n = Path(str(name or "").replace("\\", "/")).name.strip()
+        n = "".join(ch for ch in n if ch.isalnum() or ch in "._- ").strip(" .")
+        return n[:80]
 
     def tool_edit(self, app: AppContext, instruction: str = "", target: str = "last_upload", file_id: str = "", **kw) -> str:
         self._ingest(app)
@@ -165,7 +205,7 @@ class PluginImpl(Plugin):
             return "Напиши, что сделать с текстом (перепиши / сократи / исправь)."
         limit = int(app.get_plugin_setting(self.id, "max_chars", 20000) or 20000)
         src = self._read_text(Path(rec["path"]), limit)
-        if src.startswith("["):
+        if src.startswith("[") and "не прочитан" in src:
             return src
         new = self._llm_rewrite(app, instruction, src)
         if not new:
@@ -184,12 +224,11 @@ class PluginImpl(Plugin):
         ups.append(out)
         app.state["uploads"] = ups[-40:]
         app.state["last_upload_id"] = out["id"]
-        uri = dest.resolve().as_uri()
         preview = new[:300] + ("…" if len(new) > 300 else "")
         return (
-            f"Готово. Изменённый текст сохранён: {uri}\n"
+            f"Готово. Изменённый текст в чате.\n"
             f"Превью:\n---\n{preview}\n---\n"
-            "Полная версия по ссылке выше."
+            f"[файл: {dest}]"
         )
 
     def _llm_rewrite(self, app: AppContext, instruction: str, text: str) -> str:
