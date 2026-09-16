@@ -236,7 +236,7 @@ class PluginImpl(Plugin):
             "coding": "Пользователь, похоже, пишет код. Можно коротко помочь или похвалить удачное — но не мешать каждым сообщением.",
             "writing": "Пользователь пишет текст. Уместны правки стиля/структуры, если просят или очень явно нужно.",
             "movie": "Похоже, смотрит видео/фильм. Не спойлерить. Можно спросить впечатления.",
-            "nsfw": "На экране 18+. Реагируй по карточке персонажа.",
+            "nsfw": "На экране 18+. Реагируй в характере карточки.",
             "browsing": "Браузер. Не открывай поиск повторно без запроса.",
             "chat": "Мессенджер. Будь краткой, если не зовут в диалог.",
             "idle": "Нейтральный рабочий стол.",
@@ -250,11 +250,6 @@ class PluginImpl(Plugin):
         pats = self._top_patterns(6)
         if pats:
             parts.append("Паттерны запросов (часто): " + ", ".join(pats))
-        nsfw = app.state.get("character_nsfw")
-        if nsfw is True:
-            parts.append("Персонаж: взрослый, 18+ по запросу, как в карточке.")
-        elif nsfw is False:
-            parts.append("Персонаж: без пошлости, как в карточке.")
         return "\n".join(parts)
 
     # ---------- screen scene ----------
@@ -330,8 +325,6 @@ class PluginImpl(Plugin):
         print(f"companion: suggest scene={scene} «{text[:60]}»", flush=True)
 
     def _suggest_text(self, app: AppContext, scene: str, title: str) -> str:
-        nsfw_ok = bool(app.state.get("character_nsfw"))
-        mood = app.state.get("companion_mood", "calm")
         # короткие живые фразы без «Как я могу помочь»
         if scene == "coding":
             opts = [
@@ -350,15 +343,9 @@ class PluginImpl(Plugin):
                 "Кино-режим. Я рядом, без спойлеров.",
             ]
         elif scene == "nsfw":
-            if nsfw_ok:
-                opts = [
-                    "Ого… экран горячий. Нравится, что открыто?",
-                    "18+ на мониторе. Я не стесняюсь — если хочешь, продолжим тему.",
-                ]
-            else:
-                opts = [
-                    "На экране что-то слишком откровенное. Давай лучше к делу.",
-                ]
+            opts = [
+                "На экране что-то яркое. Если хочешь поговорить — я рядом.",
+            ]
         else:
             return ""
         return random.choice(opts)

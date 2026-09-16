@@ -552,15 +552,7 @@ class ChatWindow(QtWidgets.QMainWindow):
                 buf.append(chunk)
                 self._feed_assistant_stream(chunk)
             if streaming:
-                rep = None
-                try:
-                    if self.engine.app.state.pop("assistant_replaced", None):
-                        last = (self.engine.history or [])[-1] if self.engine.history else None
-                        if last and last.get("role") == "assistant":
-                            rep = last.get("content") or ""
-                except Exception:
-                    rep = None
-                self._finish_assistant_stream(replace=rep or None)
+                self._finish_assistant_stream()
             else:
                 self._append("Ассистент", "(пустой ответ)")
             self.set_status("idle", "готово")

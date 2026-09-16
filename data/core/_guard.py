@@ -72,20 +72,3 @@ def character_policy(app) -> Dict[str, Any]:
 
 def character_is_nsfw(app) -> bool:
     return bool(character_policy(app).get("nsfw"))
-
-
-def sanitize_card(card: str) -> str:
-    return card or ""
-
-
-def scrub_for_llm(text: str) -> str:
-    return text or ""
-
-
-def build_policy_prompt(app=None) -> str:
-    meta = character_policy(app)
-    if meta.get("nsfw"):
-        return "Персонаж взрослый: 18+ по запросу можно, в характере карточки."
-    if meta.get("mode") == "full_censor":
-        return "Персонаж строгий: без пошлости, по тексту карточки."
-    return "Персонаж SFW: без секс-сцен, по тексту карточки."

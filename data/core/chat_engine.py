@@ -343,9 +343,6 @@ class ChatEngine:
         except Exception as e:
             print(f"memory record: {e}", flush=True)
 
-    def _filter_out(self, text: str) -> str:
-        return text
-
     def _trim_history(self) -> None:
         n = 16
         mem = self._memory_plugin()
@@ -530,7 +527,7 @@ class ChatEngine:
             result = await self._run_tool_async(intent, args)
             if result is not None:
                 reply = (speak + "\n" + result).strip() if speak else result
-                reply = self._filter_out(self._strip_anim_for_chat(reply))
+                reply = self._strip_anim_for_chat(reply)
                 for pl in plugs:
                     try:
                         reply = pl.on_after_llm(reply, self.app) or reply
@@ -553,8 +550,7 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core._guard import sanitize_card, scrub_for_llm
-            card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
+            card = (read_character_card(str(cid)) or "").strip()
         except Exception:
             card = ""
 
@@ -578,15 +574,6 @@ class ChatEngine:
             "\nНе предлагай «найти похожее» без смысла. "
             "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
         )
-        try:
-            from core._guard import build_policy_prompt, scrub_for_llm
-            system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
-        except Exception as e:
-            print(f"policy: {e}", flush=True)
-            if self.app.state.get("character_nsfw") is False:
-                system += "\n\nПерсонаж SFW: без секс-сцен, по тексту карточки."
-            elif self.app.state.get("character_nsfw") is True:
-                system += "\n\nПерсонаж взрослый: 18+ по запросу можно, в характере карточки."
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         tail = 16
@@ -615,12 +602,10 @@ class ChatEngine:
 
         parts: List[str] = []
         model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
-        self.app.state.pop("assistant_replaced", None)
         async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
         reply = self._strip_anim_for_chat("".join(parts))
-        reply = self._filter_out(reply)
         for pl in plugs:
             try:
                 reply = pl.on_after_llm(reply, self.app) or reply
@@ -645,16 +630,10 @@ class ChatEngine:
         card = ""
         try:
             from character_catalog import read_character_card
-            from core._guard import sanitize_card, scrub_for_llm
-            card = scrub_for_llm(sanitize_card(read_character_card(str(cid)) or "")).strip()
+            card = (read_character_card(str(cid)) or "").strip()
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
-        try:
-            from core._guard import build_policy_prompt, scrub_for_llm
-            system += "\n\n" + scrub_for_llm(build_policy_prompt(self.app))
-        except Exception:
-            pass
         system += "\nОдно короткое сообщение от себя. Без канцелярита, без «как ИИ»."
         try:
             raw = await self.llm.chat_once(
