@@ -30,7 +30,7 @@ LOG_MAIN = ROOT / "selftest_plugins.log"
 LOG_HUMAN = ROOT / "selftest_human.log"
 PAUSE = 0.25
 
-# Без QApplication плагины avatar/auto_messages/reminders/screen_react
+# Без QApplication плагины auto_messages/reminders/persona
 # падают: "QWidget: Must construct a QApplication before a QWidget"
 _QT_APP = None
 
@@ -63,21 +63,17 @@ def ensure_qt_app():
 
 # id плагина → список тестовых фраз (2 прохода = фразы гоняются дважды)
 PLUGIN_PHRASES: Dict[str, List[str]] = {
-    "emotion": [
+    "persona": [
         "люблю тебя",
         "бесит меня всё",
         "мне грустно",
         "ура отлично",
         "что у меня на экране",
     ],
-    "screen_react": [
+    "screen": [
         "что у меня на экране",
         "посмотри на экран",
         "что видно на мониторе",
-    ],
-    "screen_vision": [
-        "что у меня на экране",
-        "посмотри на экран",
         "опиши экран",
     ],
     "notes": [
@@ -93,9 +89,6 @@ PLUGIN_PHRASES: Dict[str, List[str]] = {
         "запомни: selftest факт памяти",
         "меня зовут Тестер",
         "что ты помнишь",
-    ],
-    "memory_persona": [
-        "запомни: legacy persona test",
     ],
     "browser_search": [
         "найди котиков",
@@ -120,10 +113,6 @@ PLUGIN_PHRASES: Dict[str, List[str]] = {
     ],
     "voice": [
         "привет",
-    ],
-    "avatar": [
-        "люблю тебя",
-        "я устал",
     ],
     "character_log": [
         "привет",
@@ -387,7 +376,6 @@ def run_passes(
                     "auto_messages",
                     "voice",
                     "character_log",
-                    "memory_persona",
                 ):
                     detail = detail + " (passive ok)"
                 log.result(pid, pass_n, phrase, status, detail)

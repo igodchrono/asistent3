@@ -301,7 +301,7 @@ def scenario_memory(app, plugins, log: Log) -> None:
 def scenario_emotion(app, plugins, log: Log) -> None:
     log.line("")
     log.line("===== ЭМОЦИИ =====")
-    pl = plugins.get("emotion")
+    pl = plugins.get("persona")
     if not pl:
         log.result("emotion", "plugin", "SKIP", "not loaded")
         return
@@ -350,8 +350,8 @@ def scenario_nsfw_characters(app, plugins, log: Log) -> None:
     flags = {cid: character_nsfw_flag(app, cid) for cid in ids}
     log.line(f"nsfw flags (from cards): {flags}")
 
-    emo = plugins.get("emotion")
-    screen = plugins.get("screen_react")
+    emo = plugins.get("persona")
+    screen = plugins.get("screen")
 
     # имитация +18 контекста экрана
     nsfw_blob = "Chrome - hentai 18+ pornhub nsfw gallery"
@@ -574,8 +574,8 @@ def scenario_nsfw_web_and_screen(app, plugins, log: Log, browser: bool) -> None:
 
     log.result("nsfw_img", "find", "OK", str(found))
     pc = plugins.get("pc_control")
-    emo = plugins.get("emotion")
-    screen = plugins.get("screen_react")
+    emo = plugins.get("persona")
+    screen = plugins.get("screen")
 
     # НЕ закрываем чужие папки пользователя — только фокус на картинке
     opened = False
@@ -735,7 +735,7 @@ def scenario_notes_rag_reminders(app, plugins, log: Log) -> None:
 def scenario_screen(app, plugins, log: Log) -> None:
     log.line("")
     log.line("===== ЭКРАН =====")
-    for pid in ("screen_react", "screen_vision"):
+    for pid in ("screen",):
         pl = plugins.get(pid)
         if not pl:
             log.result(pid, "plugin", "SKIP", "")

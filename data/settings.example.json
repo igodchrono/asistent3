@@ -21,9 +21,6 @@
     "memory": true,
     "deep_think": true,
     "files": true,
-    "screen_react": false,
-    "avatar": false,
-    "emotion": false,
     "character_log": true
   },
   "PLUGIN_SETTINGS": {
@@ -44,9 +41,6 @@
       "listen_enabled": false,
       "wake_enabled": false,
       "speak_enabled": false
-    },
-    "avatar": {
-      "enabled": false
     }
   },
   "ACTIVE_CHARACTER": "default",

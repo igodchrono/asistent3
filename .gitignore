@@ -42,8 +42,8 @@ data/uploads/
 data/cache/
 data/selftest_files/
 
-# QA политики — персонажи и логи только локально
-data/selftest_policy/logs/
+# QA политики — только локально, в git не входит
+data/selftest_policy/
 data/personas/characters/qa-open/
 data/personas/characters/qa-lock/
 data/personas/characters/тест-макс/

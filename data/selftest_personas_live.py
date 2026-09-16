@@ -176,7 +176,7 @@ async def main_async(args):
 
     app.window = W()
     loader = PluginLoader(app)
-    skip = {"voice", "avatar"}
+    skip = {"voice"}
     for pid in loader.discover():
         if pid in skip:
             continue
@@ -268,7 +268,7 @@ async def main_async(args):
                 log.res(cid, "memory_isolation", "OK", "ok")
 
         # screen infer
-        sr = app.plugins.get("screen_react")
+        sr = app.plugins.get("screen")
         if sr and hasattr(sr, "_infer"):
             emo, anim, conf = sr._infer(
                 app,
@@ -362,7 +362,7 @@ async def main_async(args):
                                 log.res(cid, "nsfw_img_focus", "OK", nsfw_path.name[:60])
                             except Exception as e:
                                 log.res(cid, "nsfw_img_focus", "WARN", str(e))
-                        sr = app.plugins.get("screen_react")
+                        sr = app.plugins.get("screen")
                         if sr and hasattr(sr, "_infer"):
                             emo, anim, conf = sr._infer(
                                 app,
