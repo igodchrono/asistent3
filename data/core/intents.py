@@ -30,8 +30,10 @@ _WEB_VERBS = (
 _IMG = ("картин", "фото", "изображ", "обои", "арт ", "art", "image", "wallpaper", "скрин")
 _VID = ("видео", "youtube", "ютуб", "ролик", "клип")
 _GEN_VERBS = (
-    "нарисуй", "сгенерируй", "создай картин", "сделай картин", "сделай арт",
-    "изобрази", "представь в виде", "draw ", "draw a", "generate an image", "generate a picture",
+    "нарисуй", "нарисовать", "нарисуй-ка", "сгенерируй", "сгенерировать",
+    "создай картин", "сделай картин", "сделай изображ", "сделай арт",
+    "изобрази", "представь в виде", "draw ", "draw a", "generate an image",
+    "generate a picture", "create an image",
 )
 _EDIT_IMG = (
     "переделай", "дорисуй", "перекрась", "измени картин", "добавь на картин",
@@ -105,15 +107,18 @@ def is_pick(low: str, has_last_search: bool) -> bool:
     ))
     if look and pick:
         return True
-    if has_last_search and (look or pick):
+    if has_last_search and pick:
+        return True
+    if has_last_search and any(w in low for w in ("на них", "на эти", "на выдач", "на результат", "на эти картин")):
         return True
     return False
 
 
 def is_describe_screen(low: str) -> bool:
-    if any(w in low for w in ("на экране", "на мониторе", "на дисплее")):
-        if any(w in low for w in ("что", "опиши", "покажи что")):
-            return True
+    screen = any(w in low for w in ("экран", "монитор", "дисплей"))
+    ask = any(w in low for w in ("что", "опиши", "покажи что", "посмотри", "глянь", "посмотр", "повнимательн"))
+    if screen and ask:
+        return True
     return any(w in low for w in (
         "что я смотрю", "что открыто",
     ))
@@ -206,7 +211,11 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
             return {"intent": "imggen_edit", "args": {"prompt": prompt, "source": "last"}, "speak": ""}
     if (not search_first) and any(w in low for w in _GEN_VERBS):
         prompt = strip_search_fluff(raw)
-        for v in ("нарисуй", "сгенерируй", "изобрази", "draw", "generate"):
+        for v in (
+            "можешь", "можете", "пожалуйста",
+            "нарисуй", "нарисовать", "сгенерируй", "сгенерировать",
+            "изобрази", "draw", "generate",
+        ):
             prompt = re.sub(r"^" + re.escape(v) + r"\s+", "", prompt, flags=re.I)
         return {"intent": "imggen", "args": {"prompt": prompt or raw, "size": "square"}, "speak": ""}
 
@@ -280,7 +289,7 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         return {"intent": "note_add", "args": {"text": body}, "speak": ""}
 
     if low.startswith("открой ") or low.startswith("открыть "):
-        tgt = low.split(" ", 1)[-1].strip(" .!?")
+        tgt = re.sub(r"\s*(пожалуйста|плиз)\s*$", "", low.split(" ", 1)[-1], flags=re.I).strip(" .!?")
         if tgt in ("блокнот", "калькулятор", "notepad", "calc", "calculator"):
             return {"intent": "pc_open", "args": {"target": tgt}, "speak": ""}
         if tgt in ("chrome", "firefox", "проводник", "explorer"):
@@ -293,9 +302,9 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         if tgt:
             return {"intent": "pc_close", "args": {"target": tgt}, "speak": ""}
 
-    if low in ("громче", "сделай громче"):
+    if re.search(r"\b(громче|погромче|сделай громче)\b", low):
         return {"intent": "pc_volume", "args": {"direction": "up"}, "speak": ""}
-    if low in ("тише", "сделай тише"):
+    if re.search(r"\b(тише|потише|сделай тише)\b", low):
         return {"intent": "pc_volume", "args": {"direction": "down"}, "speak": ""}
 
     if "очисти корзину" in low or "очистить корзину" in low:
@@ -348,11 +357,15 @@ if __name__ == "__main__":
         ("запиши: купить молоко", "note_add", {}),
         ("запиши стихотворение про лису", None, {}),
         ("громче", "pc_volume", {}),
+        ("сделай погромче", "pc_volume", {}),
+        ("открой калькулятор пожалуйста", "pc_open", {}),
         ("открой блокнот", "pc_open", {}),
         ("закрой калькулятор", "pc_close", {}),
         ("мне скучно", None, {}),
         ("найди что-то интересное", "web_search", {}),
         ("нарисуй рыжего кота", "imggen", {}),
+        ("можешь нарисовать закат", "imggen", {}),
+        ("сгенерировать картинку замка", "imggen", {}),
         ("сгенерируй картинку замка", "imggen", {}),
         ("сделай арт киберпанк город", "imggen", {}),
         ("изобрази закат над морем", "imggen", {}),

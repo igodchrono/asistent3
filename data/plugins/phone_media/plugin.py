@@ -22,10 +22,11 @@ from urllib.parse import quote
 from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
 _ASK = (
-    "сгенерируй", "нарисуй", "сделай картин", "сделай изображ", "сделай арт",
+    "сгенерируй", "сгенерировать", "нарисуй", "нарисовать",
+    "сделай картин", "сделай изображ", "сделай арт",
     "создай картин", "изобрази", "представь в виде",
     "сгенери изображение", "сгенерируй изображение", "сгенерируй картин",
-    "нарисуй мне", "draw ", "generate an image", "generate a picture",
+    "нарисуй мне", "draw ", "generate an image", "generate a picture", "create an image",
 )
 _ALIASES = {
     "qwen": "workflows/qwen_image.json",
