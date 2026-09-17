@@ -174,18 +174,6 @@ class PluginImpl(Plugin):
         if energy is not None:
             app.state["companion_mood_energy"] = float(energy)
         app.state["companion_mood_at"] = time.time()
-        # связать с emotion-плагином
-        pl = app.plugins.get("persona") or app.state.get("emotion_plugin") or app.plugins.get("emotion")
-        if pl and hasattr(pl, "set_context"):
-            try:
-                anim = {
-                    "happy": "happy", "sad": "sad", "annoyed": "angry",
-                    "flirty": "flirty", "curious": "thinking", "calm": "idle",
-                    "shy": "shy", "lust": "flirty",
-                }.get(mood, "idle")
-                pl.set_context(app, anim, "companion_mood")
-            except Exception:
-                pass
 
     def _profile_lines(self, app: AppContext) -> List[str]:
         lines: List[str] = []

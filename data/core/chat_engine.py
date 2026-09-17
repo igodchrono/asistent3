@@ -511,6 +511,7 @@ class ChatEngine:
             print(f"intent: remap → {intent} (после поиска, не ПК/не URL выдачи)", flush=True)
 
         print(f"intent: {intent} args={args}", flush=True)
+        self.app.state["last_intent"] = intent
 
         # улучшить query для поиска (не сырая фраза пользователя)
         if intent == "web_search":
