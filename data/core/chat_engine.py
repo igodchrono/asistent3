@@ -177,12 +177,22 @@ class ChatEngine:
         return parsed
 
     def _fast_after_search(self, low: str) -> Optional[Dict[str, Any]]:
-        """После поиска не ходить в LLM и не открывать Google заново."""
+        """После поиска не ходить в LLM и не открывать Google заново.
+
+        Только короткие follow-up про УЖЕ найденное. Новые поиски, «скинь файлом»
+        и «выбери лучшую» (описать выдачу) сюда не входят.
+        """
         has = bool(
             self.app.state.get("last_search_results")
             or self.app.state.get("last_search_query")
         )
         if not has:
+            return None
+        if any(w in low for w in (
+            "найди", "поищи", "погугли", "загугли", "скинь файлом",
+            "дай файлом", "сохрани в файл", "сохрани как файл", "отправь файлом",
+            "приложи файл", "в виде файла",
+        )):
             return None
         idx = 1
         m = re.search(r"(?:^|\s)(?:номер\s*)?(\d{1,2})(?:\s|$)", low)
@@ -194,10 +204,15 @@ class ChatEngine:
         want_dl = any(
             w in low
             for w in (
-                "скач", "сохрани", "в чат", "пришли картин", "скинь",
-                "эту картин", "лучш", "выдай картин", "выдай фото",
+                "скач", "пришли картин", "эту картин",
+                "выдай картин", "выдай фото", "сохрани картин", "сохрани фото",
             )
         )
+        if "скинь" in low and "файл" not in low:
+            if any(w in low for w in ("её", "ее", "эту", "это", "перв", "втор", "номер")):
+                want_dl = True
+            elif low.strip(" .!?") in ("скинь", "скинь её", "скинь ее", "скинь это"):
+                want_dl = True
         want_open = (
             low.startswith("открой")
             or low.startswith("открыть")
@@ -330,7 +345,11 @@ class ChatEngine:
             if pid and hasattr(self.app, "is_plugin_enabled") and not self.app.is_plugin_enabled(pid):
                 continue
             out.append(pl)
-        return out
+        # поза/настроение должны увидеть фразу ДО перехвата notes/memory/imggen
+        watch = {"persona", "companion", "character_log", "attachments"}
+        head = [p for p in out if getattr(p, "id", "") in watch]
+        tail = [p for p in out if getattr(p, "id", "") not in watch]
+        return head + tail
 
     def _memory_plugin(self):
         try:
@@ -465,6 +484,8 @@ class ChatEngine:
 
         # 1) редкие sync-перехваты (голос, подтверждения pc) — если плагин сам handled
         plugs = self._active_plugins()
+        handled_by = ""
+        handled_reply = None
         for pl in plugs:
             try:
                 hr = pl.on_user_message(text, self.app)
@@ -472,14 +493,31 @@ class ChatEngine:
                 print(f"[plugin {pl.id}] on_user_message: {e}", flush=True)
                 continue
             if isinstance(hr, HookResult) and hr.handled:
-                reply = self._strip_anim_for_chat(hr.reply or "")
-                self.history.append({"role": "assistant", "content": reply})
-                self._remember("assistant", reply)
-                self._trim_history()
-                self._schedule_summary()
-                if reply:
-                    yield reply
-                return
+                handled_reply = hr.reply or ""
+                handled_by = getattr(pl, "id", "") or ""
+                break
+        if handled_reply is not None:
+            intent_from = {
+                "memory": "memory_add",
+                "notes": "note_add",
+                "reminders": "reminder_add",
+                "phone_media": "imggen",
+                "pc_control": "pc_open",
+            }.get(handled_by, "chat")
+            self.app.state["last_intent"] = intent_from
+            reply = self._strip_anim_for_chat(handled_reply)
+            for pl in plugs:
+                try:
+                    reply = pl.on_after_llm(reply, self.app) or reply
+                except Exception as e:
+                    print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
+            self.history.append({"role": "assistant", "content": reply})
+            self._remember("assistant", reply)
+            self._trim_history()
+            self._schedule_summary()
+            if reply:
+                yield reply
+            return
 
         # 2) классификация намерения
         classified = await self._classify(text)

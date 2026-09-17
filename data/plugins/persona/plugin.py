@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""persona = эмоции + аватар. Все кадры из images/, не 24 штуки."""
+"""persona = эмоции + аватар. Все кадры из images/, не узкий список."""
 from __future__ import annotations
 
 import json
 import random
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from core.plugin_api import AppContext, Plugin, SettingField
+from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
 try:
     from plugins.persona.window import AvatarWindow, has_avatar_images
@@ -33,46 +34,30 @@ _FALLBACK = {
     "wink": "teasing",
     "neutral": "idle",
     "hate": "angry",
+    "playful": "playful",
+    "sleepy": "sleepy",
 }
 
-_MOOD_HINT = {
-    "happy": ("happy", "playful", "sly", "giggling"),
-    "flirty": ("flirty", "love", "teasing", "seductive", "sly"),
-    "sad": ("sad", "cry", "shy"),
-    "angry": ("angry", "pouting", "frustrated"),
-    "shy": ("shy", "blush", "embarrassed"),
-    "curious": ("thinking", "searching", "surprised"),
-    "calm": ("idle", "neutral"),
-    "annoyed": ("angry", "pouting"),
+# настроение → семьи кадров (не один idle)
+_MOOD_FAMILIES = {
+    "happy": ("happy", "playful", "giggling", "dance", "proud", "idle"),
+    "flirty": ("flirty", "teasing", "sly", "love", "seductive", "lingerie", "undress"),
+    "sad": ("cry", "shy", "pouting", "love", "idle"),
+    "angry": ("angry", "pouting", "jealous", "pointing"),
+    "shy": ("shy", "blush", "embarrassed", "innocent", "idle"),
+    "curious": ("thinking", "searching", "surprised", "pointing"),
+    "calm": ("idle", "neutral", "thinking", "sleepy"),
+    "annoyed": ("angry", "pouting", "tired", "pointing"),
+    "playful": ("playful", "mischievous", "sly", "teasing", "dance", "giggling"),
+    "sleepy": ("sleepy", "tired", "idle", "bed"),
+    "proud": ("proud", "confident", "happy", "smirking"),
+    "mischievous": ("mischievous", "sly", "teasing", "playful"),
 }
 
-_POSE_KEYS: List[Tuple[Tuple[str, ...], str]] = [
-    (("танцуй", "потанцуй", "станцуй", "танец"), "dance"),
-    (("хвостик", "хвост", "ушка", "уши"), "sly"),
-    (("рук", "ладон", "пальц", "что держишь", "в руках"), "pointing"),
-    (("укаж", "покажи сюда", "вот так", "посмотри сюда"), "pointing"),
-    (("грудь", "сиськ", "тело ближе", "поближе", "крупнее", "крупный план"), "lingerie"),
-    (("бель", "лифчик", "нижнее"), "lingerie"),
-    (("раздень", "голая", "голую", "ню ", "без одежд"), "undress"),
-    (("ванн", "моешь", "купа"), "bath"),
-    (("кроват", "ляж", "ложись", "в постель"), "bed"),
-    (("подмигн", "дразн"), "teasing"),
-    (("смущ", "стесня"), "shy"),
-    (("любл", "поцел", "обним"), "love"),
-    (("ревн",), "jealous"),
-    (("бесит", "злюсь", "злая"), "angry"),
-    (("груст", "плач"), "cry"),
-    (("устал", "спать", "спи "), "sleepy"),
-    (("боле", "плохо себя"), "sick"),
-    (("удиви", "ого", "шок"), "shocked"),
-    (("испуг", "страшн"), "scared"),
-    (("горж", "молодец"), "proud"),
-    (("балу", "дуроч"), "mischievous"),
-    (("подумай", "думай"), "thinking"),
-    (("поиск",), "searching"),
-    (("хихи", "хаха"), "giggling"),
-    (("покажи себя", "как ты выглядишь"), "idle"),
-]
+_NSFW_FAMILIES = {
+    "undress", "lingerie", "bath", "bed", "naked", "seductive",
+    "dominant", "submissive",
+}
 
 _INTENT_ANIM = {
     "web_search": "searching",
@@ -83,16 +68,81 @@ _INTENT_ANIM = {
     "deep_think": "thinking",
     "pc_open": "pointing",
     "pc_search_files": "searching",
+    "pc_search_folders": "searching",
     "memory_add": "happy",
+    "memory_list": "thinking",
     "reminder_add": "surprised",
+    "note_add": "happy",
+    "save_file": "pointing",
 }
+
+# короткие ключи — через границу слова, иначе «рук» ловит «инструкцию»
+_POSE_KEYS: List[Tuple[Tuple[str, ...], str]] = [
+    (("танцуй", "потанцуй", "станцуй", "танец", "попляши"), "dance"),
+    (("хвостик", "хвост", "ушки", "ушка", "ушами"), "sly"),
+    (("что держишь", "в руках", "покажи руки", "ладони", "ладошку"), "pointing"),
+    (("покажи пальц", "пальцы"), "pointing"),
+    (("укажи", "покажи сюда", "вот так", "посмотри сюда"), "pointing"),
+    (("грудь", "сиськ", "тело ближе", "поближе", "крупнее", "крупный план", "часть тела"), "lingerie"),
+    (("живот", "талия", "бедра", "ножки", "ноги ближе"), "lingerie"),
+    (("попа", "попку", "ягодиц", "со спины", "спину"), "teasing"),
+    (("лицо ближе", "улыбку", "глаза ближе", "мордочк"), "blush"),
+    (("полный рост", "целиком", "как ты выглядишь", "покажи себя"), "idle"),
+    (("бель", "лифчик", "нижнее"), "lingerie"),
+    (("раздень", "голая", "голую", "без одежд", "ню "), "undress"),
+    (("ванн", "моешь", "купа"), "bath"),
+    (("кроват", "ляж", "ложись", "в постель"), "bed"),
+    (("подмигн", "дразн"), "teasing"),
+    (("смущ", "стесня"), "shy"),
+    (("любл", "поцел", "обним"), "love"),
+    (("ревн",), "jealous"),
+    (("бесит", "злюсь", "злая"), "angry"),
+    (("груст", "поплач", "поплачь"), "cry"),
+    (("устал", "поспи", "спать пора"), "sleepy"),
+    (("болею", "заболел", "плохо себя"), "sick"),
+    (("удивись", "шок"), "shocked"),
+    (("испуг", "страшно"), "scared"),
+    (("горж", "молодец"), "proud"),
+    (("балуй", "дуроч"), "mischievous"),
+    (("подумай", "подумай-ка"), "thinking"),
+    (("хихи", "хаха", "смейся"), "giggling"),
+]
+
+_CYCLE_KEYS = (
+    "все позы", "все кадры", "все анимац", "покажи позы", "покажи кадры",
+    "следующ кадр", "следующая поза", "следующий кадр", "перелистни поз",
+    "листай поз", "листай кадр", "ещё позу", "еще позу", "другую позу",
+)
+
+
+def key_hit(low: str, key: str) -> bool:
+    """Подстрока для фраз, граница слова для коротких стемов."""
+    key = (key or "").lower().strip()
+    if not key or not low:
+        return False
+    if " " in key or len(key) >= 5:
+        return key in low
+    return re.search(r"(?:^|[^\wа-яё])" + re.escape(key), low, re.I) is not None
+
+
+def family_of(name: str) -> str:
+    return (name or "idle").lower().strip().split("_")[0] or "idle"
+
+
+def group_families(names: List[str]) -> Dict[str, List[str]]:
+    fam: Dict[str, List[str]] = {}
+    for n in names:
+        fam.setdefault(family_of(n), []).append(n)
+    for k in fam:
+        fam[k] = sorted(set(fam[k]), key=lambda x: (x != k, x))
+    return fam
 
 
 class PluginImpl(Plugin):
     id = "persona"
     name = "Персона (эмоции + аватар)"
-    version = "1.1.0"
-    description = "Настроение, все кадры, [ANIM:], окно спрайтов"
+    version = "1.2.0"
+    description = "Все кадры, позы, живое настроение, poses.json"
     settings_tab = "own"
     settings_tab_title = "Персона"
     settings_schema = [
@@ -100,6 +150,8 @@ class PluginImpl(Plugin):
         SettingField("show_avatar", "Показывать окно аватара", "bool", True),
         SettingField("inject_mood", "Писать настроение и кадры в system", "bool", True),
         SettingField("react_to_reply", "Менять кадр по ответу / [ANIM:]", "bool", True),
+        SettingField("live_idle", "Живой простой: сама меняет кадр", "bool", True),
+        SettingField("live_idle_sec", "Секунд между сменами кадра", "int", 22, min_value=8, max_value=120),
         SettingField("anim_ms", "Скорость анимации (мс)", "int", 80, min_value=30, max_value=500),
     ]
 
@@ -110,6 +162,10 @@ class PluginImpl(Plugin):
         self._forbidden: set = set()
         self._forbid_fallback = "pouting"
         self._nsfw = True
+        self._recent: List[str] = []
+        self._pose_lock_until = 0.0
+        self._cycle_i = 0
+        self._idle_timer = None
 
     def on_load(self, app: AppContext) -> None:
         self.app = app
@@ -117,12 +173,19 @@ class PluginImpl(Plugin):
         app.state.setdefault("emotion_animation", "idle")
         app.state["avatar_plugin"] = self
         app.state["emotion_plugin"] = self
-        print("🎭 persona 1.1: all sprites + mood", flush=True)
+        print("🎭 persona 1.2: all sprites + live mood + poses.json", flush=True)
         if app.get_plugin_setting(self.id, "show_avatar", True):
             self._ensure_window()
             self._load_active()
+        self._start_idle_timer(app)
 
     def on_shutdown(self, app: AppContext) -> None:
+        if self._idle_timer is not None:
+            try:
+                self._idle_timer.stop()
+            except Exception:
+                pass
+            self._idle_timer = None
         if self.win is not None:
             try:
                 self.win.close()
@@ -132,6 +195,9 @@ class PluginImpl(Plugin):
 
     def on_character_changed(self, character_id: str, previous_id: str, app: AppContext) -> None:
         self.app = app
+        self._recent = []
+        self._cycle_i = 0
+        self._pose_lock_until = 0.0
         if not app.get_plugin_setting(self.id, "show_avatar", True):
             if self.win:
                 self.win.hide()
@@ -155,14 +221,19 @@ class PluginImpl(Plugin):
         if not app.get_plugin_setting(self.id, "enabled", True):
             return None
         low = (text or "").lower()
+        if any(k in low for k in _CYCLE_KEYS):
+            shown = self._cycle_next(app)
+            if shown:
+                return HookResult(True, f"кадр {self._cycle_i}/{max(1, len(self._live_names()))}: {shown}")
         hit = self._match_pose(low)
         if hit:
-            app.state["persona_pose_request"] = hit
-            app.state["emotion"] = hit.split("_")[0]
-            app.state["emotion_animation"] = hit
-            app.state["emotion_source"] = "user_pose"
+            self._pose_lock_until = time.time() + 90
             if app.get_plugin_setting(self.id, "show_avatar", True):
                 self.apply_emotion(hit)
+            shown = str(app.state.get("emotion_animation") or hit)
+            app.state["persona_pose_request"] = shown
+            app.state["emotion"] = family_of(shown)
+            app.state["emotion_source"] = "user_pose"
         return None
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
@@ -172,17 +243,17 @@ class PluginImpl(Plugin):
             return messages
         mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
         anim = str(app.state.get("emotion_animation") or mood)
-        names = self._live_names()
-        grouped = ", ".join(names)
+        fams = group_families(self._live_names())
+        compact = ", ".join(f"{k}({len(v)})" for k, v in sorted(fams.items()) if v)
         pose = str(app.state.get("persona_pose_request") or "")
-        extra = f" Кадры (ставь ОДНО [ANIM:точное_имя] в конце): {grouped}."
-        pose_line = f" Пользователь просит позу «{pose}» — ответь в ней и поставь [ANIM:{pose}]." if pose else ""
+        pose_line = f" Пользователь просит позу «{family_of(pose)}» — ответь в ней и поставь [ANIM:{family_of(pose)}]." if pose else ""
         block = (
-            f"\n\n[НАСТРОЕНИЕ] {mood}, кадр сейчас {anim}.{extra}{pose_line}\n"
-            "Меняй кадр каждый ответ. Не только idle. "
-            "Поза/тело: pointing=руки/указать, sly/teasing=хвост/уши, "
-            "lingerie/undress=тело ближе, dance=танец, bed=кровать, bath=ванна, "
-            "proud/confident=гордость, jealous=ревность, giggling=смех.\n"
+            f"\n\n[НАСТРОЕНИЕ] {mood}, кадр сейчас {anim}. "
+            f"Семьи кадров: {compact or 'idle'}.{pose_line}\n"
+            "В конце ответа ОДИН тег [ANIM:семья] (idle/happy/sly/pointing/dance/love/flirty/"
+            "undress/lingerie/teasing/thinking/searching/shy/angry/proud/jealous/giggling/"
+            "surprised/sleepy/mischievous/bath/bed). Система сама возьмёт свежий кадр семьи. "
+            "Не повторяй idle каждый раз. Поза по просьбе важнее болтовни.\n"
         )
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = str(messages[0].get("content") or "") + block
@@ -195,17 +266,24 @@ class PluginImpl(Plugin):
         name = tags[-1].lower().strip() if tags else ""
         if name:
             app.state["emotion_animation"] = name
-            app.state["emotion"] = name.split("_")[0]
+            app.state["emotion"] = family_of(name)
             print(f"persona [ANIM:] → {name}", flush=True)
+        pose = str(app.state.get("persona_pose_request") or "")
         if not name:
-            name = str(app.state.get("persona_pose_request") or "") or self._auto_frame(app)
+            if pose:
+                name = pose
+            elif time.time() < self._pose_lock_until:
+                name = str(app.state.get("emotion_animation") or "")
+            else:
+                name = self._auto_frame(app)
         app.state["persona_pose_request"] = ""
         if name and app.get_plugin_setting(self.id, "react_to_reply", True):
-            self.apply_emotion(name)
+            exact = bool(pose) or time.time() < self._pose_lock_until
+            self.apply_emotion(name, exact=exact)
         cleaned = _ANIM_RE.sub("", reply or "")
         return cleaned.strip("\n")
 
-    def apply_emotion(self, emotion: str) -> None:
+    def apply_emotion(self, emotion: str, exact: bool = False) -> None:
         if self.app is None:
             return
         if not self.app.get_plugin_setting(self.id, "show_avatar", True):
@@ -220,10 +298,18 @@ class PluginImpl(Plugin):
                 self.win.show()
         except Exception:
             pass
-        name = self._resolve(str(emotion or "idle").lower().strip())
+        raw = str(emotion or "idle").lower().strip()
+        names = set(self._live_names())
+        if exact and raw in names and raw not in self._forbidden:
+            name = raw
+        else:
+            name = self._resolve(raw)
         if not name:
             print(f"persona: нет кадра {emotion}", flush=True)
             return
+        self._remember_shown(name)
+        self.app.state["emotion_animation"] = name
+        self.app.state["emotion"] = family_of(name)
         frames = self.win._frames.get(name) or []
         print(f"persona: frame {name} n={len(frames)}", flush=True)
         if len(frames) > 1:
@@ -236,64 +322,166 @@ class PluginImpl(Plugin):
             return [n for n in self.win.animation_names() if n not in self._forbidden]
         return []
 
+    def _remember_shown(self, name: str) -> None:
+        if not name:
+            return
+        self._recent.append(name)
+        if len(self._recent) > 40:
+            self._recent = self._recent[-40:]
+
+    def _pick_unused(self, pool: List[str]) -> str:
+        if not pool:
+            return ""
+        fresh = [p for p in pool if p not in self._recent]
+        if not fresh:
+            # все из пула уже были — забыть только их, чтобы снова крутить семью
+            shown = set(pool)
+            self._recent = [x for x in self._recent if x not in shown]
+            fresh = list(pool)
+        last = self._recent[-1] if self._recent else ""
+        if last in fresh and len(fresh) > 1:
+            fresh = [p for p in fresh if p != last]
+        return random.choice(fresh)
+
+    def _family_pool(self, family: str, names: Set[str], mood: str = "") -> List[str]:
+        family = family_of(family)
+        if family in _FALLBACK and family not in names:
+            family = _FALLBACK[family]
+        if not self._nsfw and family in _NSFW_FAMILIES:
+            family = self._forbid_fallback
+        pool = []
+        for n in names:
+            if n == family or n.startswith(family + "_"):
+                pool.append(n)
+        if mood:
+            want = f"{family}_{mood}"
+            if want in names and want not in pool:
+                pool.append(want)
+            want2 = f"{mood}_{family}"
+            if want2 in names and want2 not in pool:
+                pool.append(want2)
+        if not pool and family in names:
+            pool = [family]
+        return [p for p in pool if p not in self._forbidden]
+
     def _resolve(self, raw: str) -> str:
         raw = (raw or "idle").lower().strip()
         names = set(self._live_names())
         if not names and self.win:
             names = set(self.win.animation_names())
+        if raw in self._forbidden:
+            raw = self._forbid_fallback
         mood = str((self.app.state.get("companion_mood") if self.app else "") or "")
-        candidates = []
-        if mood:
-            for suf in _MOOD_HINT.get(mood, (mood,)):
-                candidates.append(f"{raw}_{suf}")
-                candidates.append(f"{suf}_{raw}")
-        candidates.append(raw)
-        if raw in _FALLBACK:
-            candidates.append(_FALLBACK[raw])
-        candidates.extend([raw.split("_")[0], "idle", "neutral", "happy"])
-        for c in candidates:
-            if c in self._forbidden:
-                if self._forbid_fallback in names:
-                    return self._forbid_fallback
-                continue
+        # точное имя, если есть
+        if raw in names and raw not in self._forbidden:
+            # всё равно взять вариант семьи, чтобы не залипать на одном PNG
+            pool = self._family_pool(family_of(raw), names, mood)
+            picked = self._pick_unused(pool or [raw])
+            if picked:
+                return picked
+            return raw
+        pool = self._family_pool(raw, names, mood)
+        if not pool:
+            pool = self._family_pool(_FALLBACK.get(raw, raw), names, mood)
+        if not pool:
+            # любой кадр семьи по префиксу/суффиксу
+            for alt in list(names):
+                if alt.startswith(family_of(raw) + "_") or alt.endswith("_" + family_of(raw)):
+                    if alt not in self._forbidden:
+                        pool.append(alt)
+        picked = self._pick_unused(pool)
+        if picked:
+            return picked
+        for c in (self._forbid_fallback, "idle", "neutral", "happy"):
             if c in names:
                 return c
-        for alt in list(names):
-            if alt == raw or alt.startswith(raw + "_") or raw.startswith(alt + "_"):
-                if alt not in self._forbidden:
-                    return alt
-        return self._forbid_fallback if self._forbid_fallback in names else (next(iter(names), ""))
+        return next(iter(names), "")
 
     def _match_pose(self, low: str) -> str:
         for item in self._keywords:
             keys = item.get("keys") or []
             anim = str(item.get("anim") or "")
-            if anim and any(k in low for k in keys):
-                return self._resolve(anim) or anim
+            if anim and any(key_hit(low, k) for k in keys):
+                if not self._nsfw and family_of(anim) in _NSFW_FAMILIES:
+                    return self._forbid_fallback
+                return anim
         for keys, anim in _POSE_KEYS:
-            if any(k in low for k in keys):
-                if not self._nsfw and anim in ("undress", "lingerie", "bath", "bed", "naked", "seductive"):
-                    return self._resolve(self._forbid_fallback)
-                return self._resolve(anim) or anim
+            if any(key_hit(low, k) for k in keys):
+                if not self._nsfw and anim in _NSFW_FAMILIES:
+                    return self._forbid_fallback
+                return anim
         return ""
 
     def _auto_frame(self, app: AppContext) -> str:
         intent = str(app.state.get("last_intent") or "")
-        if intent in _INTENT_ANIM:
-            return _INTENT_ANIM[intent]
-        mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
-        hints = _MOOD_HINT.get(mood, (mood, "idle"))
         names = set(self._live_names())
-        idle_var = f"idle_{mood}" if mood in ("happy", "sad", "angry", "sly") else ""
-        pool = [h for h in ((idle_var,) + hints) if h and h in names]
-        if not pool:
-            pool = [h for h in hints if h in names]
-        if not pool:
-            return "idle"
-        last = str(app.state.get("emotion_animation") or "")
-        if last in pool and len(pool) > 1:
-            pool = [p for p in pool if p != last]
-        return random.choice(pool)
+        mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
+        if intent in _INTENT_ANIM:
+            return self._resolve(_INTENT_ANIM[intent])
+        families = list(_MOOD_FAMILIES.get(mood, (mood, "idle")))
+        if not self._nsfw:
+            families = [f for f in families if f not in _NSFW_FAMILIES]
+        pool: List[str] = []
+        for fam in families:
+            pool.extend(self._family_pool(fam, names, mood))
+        # 15% — любой ещё не показанный кадр, чтобы со временем пройти все 111
+        unused_all = [n for n in names if n not in self._recent]
+        if unused_all and random.random() < 0.18:
+            extra = unused_all
+            if not self._nsfw:
+                extra = [n for n in extra if family_of(n) not in _NSFW_FAMILIES]
+            if extra:
+                pool.extend(extra)
+        pool = list(dict.fromkeys(pool))
+        picked = self._pick_unused(pool)
+        return picked or "idle"
+
+    def _cycle_next(self, app: AppContext) -> str:
+        names = self._live_names()
+        if not names:
+            return ""
+        self._cycle_i = (self._cycle_i % len(names)) + 1
+        name = names[self._cycle_i - 1]
+        self._pose_lock_until = time.time() + 20
+        app.state["persona_pose_request"] = name
+        app.state["emotion_animation"] = name
+        app.state["emotion"] = family_of(name)
+        self.apply_emotion(name, exact=True)
+        return name
+
+    def _start_idle_timer(self, app: AppContext) -> None:
+        try:
+            from PyQt5 import QtCore
+        except Exception:
+            return
+        if self._idle_timer is not None:
+            try:
+                self._idle_timer.stop()
+            except Exception:
+                pass
+        sec = int(app.get_plugin_setting(self.id, "live_idle_sec", 22) or 22)
+        self._idle_timer = QtCore.QTimer()
+        self._idle_timer.setInterval(max(8, sec) * 1000)
+        self._idle_timer.timeout.connect(lambda: self._on_idle_tick(app))
+        self._idle_timer.start()
+
+    def _on_idle_tick(self, app: AppContext) -> None:
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return
+        if not app.get_plugin_setting(self.id, "live_idle", True):
+            return
+        if time.time() < self._pose_lock_until:
+            return
+        if not app.get_plugin_setting(self.id, "show_avatar", True):
+            return
+        # не дёргать, если пользователь только что писал (кадр сменит on_after_llm)
+        last = float(app.state.get("last_user_activity") or 0)
+        if last and time.time() - last < 8:
+            return
+        name = self._auto_frame(app)
+        if name:
+            print(f"persona live → {name}", flush=True)
+            self.apply_emotion(name)
 
     def _ensure_window(self) -> None:
         if AvatarWindow is None:
@@ -323,7 +511,7 @@ class PluginImpl(Plugin):
             return
         n = self.win.load_from_character_dir(cdir)
         names = self.win.animation_names()
-        print(f"persona: {cdir.name} files≈{n} unique={len(names)}", flush=True)
+        print(f"persona: {cdir.name} files≈{n} unique={len(names)} forbidden={len(self._forbidden)}", flush=True)
         start = "idle" if self.win.has("idle") else ("neutral" if self.win.has("neutral") else (names[0] if names else "idle"))
         self.win.show_static(start)
         self.win.show()
@@ -336,7 +524,7 @@ class PluginImpl(Plugin):
         if self.app is None:
             return
         cdir = self.app.get_character_dir()
-        for fname in ("emotions_map.json", "reactions.json"):
+        for fname in ("poses.json", "emotions_map.json", "reactions.json"):
             p = Path(cdir) / fname
             if not p.is_file():
                 continue
@@ -345,16 +533,24 @@ class PluginImpl(Plugin):
             except Exception as e:
                 print(f"persona: {fname} {e}", flush=True)
                 continue
-            for row in data.get("keywords") or []:
-                if isinstance(row, dict):
-                    self._keywords.append(row)
+            rows = []
+            if isinstance(data.get("poses"), list):
+                rows.extend(data["poses"])
+            if isinstance(data.get("keywords"), list):
+                rows.extend(data["keywords"])
             for row in data.get("reactions") or []:
                 if not isinstance(row, dict):
                     continue
                 phrases = row.get("phrases") or []
                 sprite = row.get("sprite") or row.get("anim") or ""
                 if phrases and sprite:
-                    self._keywords.append({"keys": phrases, "anim": sprite})
+                    rows.append({"keys": phrases, "anim": sprite})
+            for row in rows:
+                if isinstance(row, dict) and (row.get("keys") or row.get("phrases")) and (row.get("anim") or row.get("sprite")):
+                    self._keywords.append({
+                        "keys": list(row.get("keys") or row.get("phrases") or []),
+                        "anim": str(row.get("anim") or row.get("sprite") or ""),
+                    })
         try:
             from character_catalog import read_character_card
             card = read_character_card(str(self.app.get_active_character() or "")) or ""
@@ -393,3 +589,27 @@ class PluginImpl(Plugin):
 
 def register():
     return PluginImpl()
+
+
+if __name__ == "__main__":
+    fail = 0
+
+    def check(ok, msg):
+        global fail
+        if not ok:
+            fail += 1
+            print("FAIL", msg)
+        else:
+            print("OK  ", msg)
+
+    check(key_hit("покажи хвостик", "хвостик"), "хвостик")
+    check(not key_hit("напиши инструкцию", "рук"), "рук ≠ инструкция")
+    check(not key_hit("это дорого", "ого"), "ого ≠ дорого")
+    check(key_hit("что в руках", "в руках"), "в руках")
+    check(key_hit("разденься", "раздень"), "раздень")
+    check(family_of("undress_teasing") == "undress", "family undress")
+    fams = group_families(["idle", "idle_happy", "sly", "sly_happy", "dance"])
+    check(fams["idle"] == ["idle", "idle_happy"], f"group idle {fams.get('idle')}")
+    check("все позы" in "покажи все позы пожалуйста", "cycle phrase")
+    print(f"fail={fail}")
+    raise SystemExit(fail)

@@ -50,6 +50,9 @@ class PluginImpl(Plugin):
             return None
         low = (text or "").strip().lower()
         if low.startswith("напомни"):
+            import re
+            if re.match(r"^напомни(шь)?\s+(как|кто|почему|зачем|что\s+я|что\s+ты|мне\s+как|мне\s+что)\b", low):
+                return None
             return HookResult(True, self.tool_add(app, text=text))
         if low in ("напоминания", "список напоминаний", "покажи напоминания"):
             return HookResult(True, self.tool_list(app))

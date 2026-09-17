@@ -48,7 +48,7 @@ _SCENE_HINTS = {
 class PluginImpl(Plugin):
     id = "companion"
     name = "Живой компаньон"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Время, настроение, профиль, сцены экрана, паттерны"
     settings_tab = "own"
     settings_tab_title = "Компаньон"
@@ -72,8 +72,8 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         self._load_patterns(app)
-        self._ensure_mood(app)
         self._tick_time(app)
+        self._ensure_mood(app)
         try:
             from PyQt5 import QtCore
             self._timer = QtCore.QTimer()
@@ -83,7 +83,7 @@ class PluginImpl(Plugin):
             self._timer.start()
         except Exception as e:
             print(f"companion: timer {e}", flush=True)
-        print("🧠 companion 1.0: time+mood+scene+patterns", flush=True)
+        print("🧠 companion 1.1: time+mood+scene+patterns", flush=True)
 
     def on_shutdown(self, app: AppContext) -> None:
         if self._timer is not None:
@@ -106,13 +106,17 @@ class PluginImpl(Plugin):
         self._note_pattern(app, text or "")
         # лёгкий сдвиг настроения от тона
         low = (text or "").lower()
-        if any(w in low for w in ("спасибо", "молодец", "любим", "рада", "класс")):
-            self._set_mood(app, "happy", 0.75)
+        if any(w in low for w in ("спасибо", "молодец", "любим", "рада", "класс", "умница", "милая")):
+            self._set_mood(app, "happy", 0.8)
         elif any(w in low for w in ("дур", "туп", "бесит", "заткни", "достал")):
             self._set_mood(app, "annoyed", 0.7)
         elif any(w in low for w in ("скуч", "груст", "плохо", "устал")):
             self._set_mood(app, "sad", 0.55)
-        elif any(w in low for w in ("секс", "голая", "18+", "пошл", "хочу тебя")):
+        elif any(w in low for w in ("хаха", "ахах", "смешн", "прикол", "танцуй", "потанцуй")):
+            self._set_mood(app, "playful", 0.8)
+        elif any(w in low for w in ("спокойн", "просто поговор", "обними")):
+            self._set_mood(app, "calm", 0.55)
+        elif any(w in low for w in ("секс", "голая", "18+", "пошл", "хочу тебя", "раздень")):
             if app.state.get("character_nsfw"):
                 self._set_mood(app, "flirty", 0.85)
         return None
@@ -135,14 +139,20 @@ class PluginImpl(Plugin):
         import re
         m = re.search(r"\[ANIM:([a-zA-Z0-9_]+)\]", reply or "")
         if m:
-            anim = m.group(1).lower()
+            anim = m.group(1).lower().split("_")[0]
             map_anim = {
-                "happy": "happy", "smile": "happy", "laugh": "happy",
+                "happy": "happy", "smile": "happy", "laugh": "happy", "giggling": "happy",
+                "dance": "playful", "playful": "playful", "mischievous": "playful",
                 "sad": "sad", "cry": "sad",
-                "angry": "annoyed", "annoyed": "annoyed",
+                "angry": "annoyed", "annoyed": "annoyed", "pouting": "annoyed",
                 "flirty": "flirty", "love": "flirty", "lust": "flirty", "blush": "flirty",
-                "thinking": "curious", "searching": "curious",
-                "shy": "shy",
+                "seductive": "flirty", "lingerie": "flirty", "undress": "flirty",
+                "teasing": "playful", "sly": "playful",
+                "thinking": "curious", "searching": "curious", "pointing": "curious",
+                "shy": "shy", "embarrassed": "shy",
+                "sleepy": "sleepy", "tired": "sleepy",
+                "proud": "proud", "confident": "proud",
+                "jealous": "annoyed",
             }
             if anim in map_anim:
                 self._set_mood(app, map_anim[anim], None)
@@ -165,9 +175,22 @@ class PluginImpl(Plugin):
             app.state["day_part"] = "вечер"
 
     def _ensure_mood(self, app: AppContext) -> None:
-        if not app.state.get("companion_mood"):
-            app.state["companion_mood"] = "calm"
-            app.state["companion_mood_energy"] = 0.5
+        if app.state.get("companion_mood"):
+            return
+        hour = int(app.state.get("local_hour") or datetime.now().hour)
+        if hour < 7:
+            mood, energy = "sleepy", 0.35
+        elif hour < 11:
+            mood, energy = "happy", 0.65
+        elif hour < 18:
+            mood, energy = "curious", 0.6
+        elif hour < 22:
+            mood, energy = "playful" if app.state.get("character_nsfw") else "calm", 0.7
+        else:
+            mood, energy = "calm", 0.45
+        app.state["companion_mood"] = mood
+        app.state["companion_mood_energy"] = energy
+        app.state["companion_mood_at"] = time.time()
 
     def _set_mood(self, app: AppContext, mood: str, energy: Optional[float]) -> None:
         app.state["companion_mood"] = mood
@@ -216,7 +239,9 @@ class PluginImpl(Plugin):
         parts = [
             "[COMPANION]",
             f"Сейчас: {app.state.get('local_date')} {app.state.get('local_time')} ({app.state.get('local_weekday')}), {app.state.get('day_part')}.",
-            f"Настроение персонажа: {mood} (energy={float(energy):.2f}). Отвечай в этом тоне, без упоминания служебных меток.",
+            f"Настроение персонажа: {mood} (energy={float(energy):.2f}). "
+            "Держи это настроение в тоне и мимике, без упоминания служебных меток. "
+            "Можно менять настроение по ходу разговора, если тема сдвинулась.",
             f"Сцена на экране: {scene}" + (f" | окно: {title[:80]}" if title else "") + ".",
         ]
         # подсказка по сцене
@@ -351,13 +376,31 @@ class PluginImpl(Plugin):
 
     def _mood_drift(self, app: AppContext) -> None:
         last = float(app.state.get("companion_mood_at") or 0)
-        if last and time.time() - last < 600:
+        if last and time.time() - last < 480:
             return
-        # медленно к calm
-        mood = app.state.get("companion_mood")
-        if mood in ("annoyed", "sad", "flirty", "lust"):
-            if random.random() < 0.3:
-                self._set_mood(app, "calm", 0.5)
+        hour = int(app.state.get("local_hour") or datetime.now().hour)
+        mood = str(app.state.get("companion_mood") or "calm")
+        # сильные состояния со временем отпускают
+        if mood in ("annoyed", "sad") and random.random() < 0.45:
+            self._set_mood(app, "calm", 0.5)
+            return
+        if mood in ("flirty", "lust") and random.random() < 0.25:
+            self._set_mood(app, "playful", 0.6)
+            return
+        # лёгкий дрейф по времени суток
+        if random.random() > 0.35:
+            return
+        if hour < 7:
+            self._set_mood(app, "sleepy", 0.35)
+        elif hour < 11:
+            self._set_mood(app, random.choice(("happy", "curious", "calm")), 0.6)
+        elif hour < 18:
+            self._set_mood(app, random.choice(("curious", "playful", "calm")), 0.6)
+        elif hour < 22:
+            nxt = "flirty" if app.state.get("character_nsfw") else "calm"
+            self._set_mood(app, random.choice(("playful", nxt, "happy")), 0.65)
+        else:
+            self._set_mood(app, random.choice(("sleepy", "calm", "shy")), 0.4)
 
     @staticmethod
     def _fg_title() -> str:

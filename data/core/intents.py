@@ -285,6 +285,9 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         return {"intent": "memory_forget", "args": {"text": body}, "speak": ""}
 
     if low.startswith("напомни"):
+        # «напомни как тебя зовут / что я говорил» — разговор, не будильник
+        if re.match(r"^напомни(шь)?\s+(как|кто|почему|зачем|что\s+я|что\s+ты|мне\s+как|мне\s+что)\b", low):
+            return {"intent": "chat", "args": {}, "speak": ""}
         return {"intent": "reminder_add", "args": {"text": raw}, "speak": ""}
     if "список напоминаний" in low or low == "напоминания":
         return {"intent": "reminder_list", "args": {}, "speak": ""}
@@ -365,6 +368,8 @@ if __name__ == "__main__":
         ("что ты помнишь", "memory_list", {}),
         ("забудь про чай", "memory_forget", {}),
         ("напомни через час про чай", "reminder_add", {}),
+        ("напомни как тебя зовут", "chat", {}),
+        ("напомнишь что я говорил", "chat", {}),
         ("запиши: купить молоко", "note_add", {}),
         ("запиши стихотворение про лису", None, {}),
         ("громче", "pc_volume", {}),
