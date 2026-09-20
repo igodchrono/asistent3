@@ -52,6 +52,54 @@ _DISK = re.compile(
 )
 _FILE_HINT = ("файл", "папк", "на диск", "на диске", "в папке", "на компьютере")
 
+KNOWN_INTENTS = {
+    "chat",
+    "describe_screen",
+    "web_search",
+    "search_similar",
+    "download_image",
+    "fetch_page",
+    "fetch_url",
+    "open_last_search",
+    "imggen",
+    "imggen_edit",
+    "text_edit",
+    "file_list",
+    "file_get",
+    "read_uploaded",
+    "save_file",
+    "send_file",
+    "memory_add",
+    "memory_list",
+    "memory_forget",
+    "note_add",
+    "note_list",
+    "note_find",
+    "reminder_add",
+    "reminder_list",
+    "pc_open",
+    "pc_close",
+    "pc_volume",
+    "pc_search_files",
+    "pc_search_folders",
+    "pc_open_found",
+    "pc_close_last",
+    "pc_create_text",
+    "pc_recycle",
+    "pc_empty_recycle",
+    "deep_think",
+}
+
+_SEARCH_START = re.compile(
+    r"^(?:пожалуйста[, ]+|можешь |можете )*"
+    r"(?:найди|поищи|погугли|загугли|search for|google)\b",
+    re.I,
+)
+_NOT_WEB = re.compile(
+    r"^(?:пожалуйста[, ]+|можешь |можете )*найди\s+(меня|себе|нам|в себе)\b",
+    re.I,
+)
+
 
 def normalize_text(text: str) -> str:
     t = (text or "").strip()
@@ -127,9 +175,13 @@ def is_describe_screen(low: str) -> bool:
 def is_web_search(low: str) -> bool:
     if is_local_search(low):
         return False
+    if is_new_similar(low):
+        return False
     if any(w in low for w in _WEB_VERBS):
         return True
     if any(w in low for w in ("погугли", "загугли")):
+        return True
+    if _SEARCH_START.match(low) and not _NOT_WEB.match(low):
         return True
     if any(v in low for v in ("найди", "поищи", "покажи", "скинь")) and (
         any(w in low for w in _IMG + _VID + ("в интернете", "в сети", "статью", "информац", "пример"))
@@ -140,6 +192,18 @@ def is_web_search(low: str) -> bool:
     if re.search(r"\b(найди|поищи)\s+(что-?то|чего-?нибудь|интересн)", low):
         return True
     return False
+
+
+def sanitize_intent(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Whitelist intent. Мусор от маленькой модели → chat."""
+    if not isinstance(data, dict):
+        return {"intent": "chat", "args": {}, "speak": ""}
+    intent = str(data.get("intent") or "chat").strip()
+    if intent not in KNOWN_INTENTS:
+        intent = "chat"
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    speak = str(data.get("speak") or "").strip()
+    return {"intent": intent, "args": args, "speak": speak}
 
 
 def guess_mode(low: str) -> str:
@@ -392,7 +456,12 @@ if __name__ == "__main__":
         ("переделай последнюю картинку, добавь дождь", "imggen_edit", {"has_last_image": True}),
         ("перепиши в официальном стиле", "text_edit", {"has_upload": True, "last_upload_id": "x.txt"}),
         ("покажи мои файлы", "file_list", {"has_upload": True}),
+        ("найди как настроить vscode", "web_search", {}),
+        ("найди python asyncio tutorial", "web_search", {}),
+        ("поищи документацию по rust", "web_search", {}),
+        ("найди меня", None, {}),
         ("скинь файлом", "save_file", {}),
+
         ("сохрани в файл как player.js", "save_file", {}),
     ]
     fail = 0

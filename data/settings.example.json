@@ -4,6 +4,8 @@
   "MODEL_NAME": "local-model",
   "TEMPERATURE": 0.4,
   "MAX_TOKENS": 1000,
+  "ASSISTANT_MODE": "companion",
+  "HISTORY_TAIL": 40,
   "PLUGINS_ENABLED": true,
   "PLUGINS": {
     "attachments": true,
@@ -41,8 +43,14 @@
       "listen_enabled": false,
       "wake_enabled": false,
       "speak_enabled": false
+    },
+    "memory": {
+      "enabled": true,
+      "history_tail": 40,
+      "diary_days": 10,
+      "max_inject": 10
     }
   },
-  "ACTIVE_CHARACTER": "default",
+  "ACTIVE_CHARACTER": "лисичка",
   "SYSTEM_PROMPT": "Ты живой ассистент. Характер, стиль и границы — только из карточки персонажа. Не сжимай ответ ради краткости, если персонаж или пользователь просят иначе."
 }

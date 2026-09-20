@@ -5,6 +5,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import config
 
+_card_cache: Dict[str, str] = {}
+
+
+def invalidate_card_cache() -> None:
+    _card_cache.clear()
+
 
 def characters_root() -> Path:
     base = Path(getattr(config, "DATA_DIR", Path(__file__).resolve().parent))
@@ -41,14 +47,19 @@ def character_card_path(character_id: str) -> Optional[Path]:
 
 
 def read_character_card(character_id: str, max_chars: int = 12000) -> str:
-    path = character_card_path(character_id)
+    cid = str(character_id or "")
+    if cid in _card_cache:
+        return _card_cache[cid][:max_chars]
+    path = character_card_path(cid)
     if not path:
         return ""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-        return text[:max_chars]
-    except Exception:
+    except OSError as e:
+        print(f"character card {cid}: {e}", flush=True)
         return ""
+    _card_cache[cid] = text
+    return text[:max_chars]
 
 
 def character_meta(character_id: str) -> Dict[str, Any]:

@@ -2,6 +2,8 @@
 
 Десктопный чат с локальной LLM (LM Studio / любой OpenAI-compatible API), плагинами и карточками персонажей.
 
+Личный 18+ компаньон **и** рабочий ассистент: кнопка «🦊 Компаньон / 💼 Работа» или фразы «давай по делу» / «режим лисы».
+
 **Только Windows 10/11.** `pc_control` использует `taskkill` / `os.startfile` / PowerShell. Скрипты запуска — `.bat`. Linux/macOS не поддерживаются.
 
 ## Быстрый старт
@@ -38,11 +40,12 @@ https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
 
 | | |
 |---|---|
-| Чат | стриминг токенов в окно, tools в фоне |
-| Intent | `data/core/intents.py` — быстрые правила, LLM — если правило не сработало |
+| Чат | пузыри, markdown, список дней, стриминг токенов |
+| Режим | компаньон 18+ / работа — кнопка или фраза |
+| Intent | `data/core/intents.py` — правила, LLM только если правило молчит |
 | ПК | песочница по умолчанию: блокнот и калькулятор |
 | Поиск | DuckDuckGo / картинки, fetch только публичных http(s) |
-| Память | одно SQLite: `personas/characters/<id>/memory/memory.db` |
+| Память | SQLite: `personas/characters/<id>/memory/memory.db`, ~40 реплик в контексте |
 | Персонажи | карточки в `data/personas/characters/` |
 
 Настройки: `data/settings.json` (копируется из `settings.example.json` при первом запуске). В git не коммитится.

@@ -35,8 +35,8 @@ class PluginImpl(Plugin):
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField("max_inject", "Фактов в prompt", "int", 8, min_value=1, max_value=30),
-        SettingField("history_tail", "Реплик в рабочем окне", "int", 16, min_value=6, max_value=40),
-        SettingField("diary_days", "Дней дневника в prompt", "int", 7, min_value=1, max_value=30),
+        SettingField("history_tail", "Реплик в рабочем окне", "int", 40, min_value=12, max_value=80),
+        SettingField("diary_days", "Дней дневника в prompt", "int", 10, min_value=1, max_value=30),
     ]
 
     def __init__(self) -> None:
@@ -89,12 +89,17 @@ class PluginImpl(Plugin):
 
     def _tail_n(self, app: Optional[AppContext] = None) -> int:
         app = app or self.app
-        if app is None:
-            return 16
         try:
-            return int(app.get_plugin_setting(self.id, "history_tail", 16) or 16)
+            from core.mode import history_tail
+            return history_tail(app, 40)
         except Exception:
-            return 16
+            if app is None:
+                return 40
+            try:
+                return int(app.get_plugin_setting(self.id, "history_tail", 40) or 40)
+            except (TypeError, ValueError):
+                return 40
+
 
     def record(self, role: str, content: str) -> None:
         if self.store is None:

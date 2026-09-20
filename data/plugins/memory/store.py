@@ -516,6 +516,34 @@ class CharacterMemoryStore:
         out.reverse()
         return out
 
+    def list_chat_days(self, limit: int = 21) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT date(created_at, 'unixepoch', 'localtime') AS day,
+                   COUNT(*) AS n
+            FROM messages
+            GROUP BY day
+            ORDER BY day DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def messages_for_day(self, day: str, limit: int = 200) -> List[Dict[str, Any]]:
+        day = str(day or "")
+        if not day:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT id, role, content, created_at FROM messages
+            WHERE date(created_at, 'unixepoch', 'localtime') = ?
+            ORDER BY id ASC LIMIT ?
+            """,
+            (day, max(1, int(limit))),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def messages_between(self, after_id: int, before_id: int, limit: int = 80) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
             """

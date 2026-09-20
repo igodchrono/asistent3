@@ -31,6 +31,8 @@ _TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".y
 _ANIM_RE = re.compile(r"\[ANIM:[a-zA-Z0-9_]+\]", re.I)
 _FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)\r?\n?(.*?)```", re.S)
 _INLINE_RE = re.compile(r"`([^`\n]+)`")
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _FILE_MARK_RE = re.compile(r"\[(?:фото|файл):\s*([^\]]+)\]", re.I)
 
 
@@ -68,13 +70,31 @@ def _html_line(line: str) -> str:
         )
 
     rest = _INLINE_RE.sub(_code, rest)
+    rest = _BOLD_RE.sub(r"<b>\1</b>", rest)
+    rest = _ITALIC_RE.sub(r"<i>\1</i>", rest)
     return lead + rest
 
 
 def _html_prose(text: str) -> str:
     if not text:
         return ""
-    return "<br>".join(_html_line(ln) for ln in text.split("\n"))
+    chunks: list[str] = []
+    for ln in text.split("\n"):
+        s = ln.strip()
+        if s.startswith("### "):
+            chunks.append(f"<div style='font-weight:bold;margin:6px 0 2px;'>{_html_line(s[4:])}</div>")
+        elif s.startswith("## "):
+            chunks.append(f"<div style='font-weight:bold;font-size:14px;margin:8px 0 2px;'>{_html_line(s[3:])}</div>")
+        elif s.startswith("# "):
+            chunks.append(f"<div style='font-weight:bold;font-size:15px;margin:8px 0 2px;'>{_html_line(s[2:])}</div>")
+        elif re.match(r"^[-•]\s+", s):
+            body = re.sub(r"^[-•]\s+", "", s)
+            chunks.append(f"<div style='margin-left:12px;'>• {_html_line(body)}</div>")
+        elif re.match(r"^\d+[.)]\s+", s):
+            chunks.append(f"<div style='margin-left:12px;'>{_html_line(s)}</div>")
+        else:
+            chunks.append(_html_line(ln) + "<br>")
+    return "".join(chunks)
 
 
 def _html_code(code: str) -> str:
@@ -203,7 +223,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._bridge = _GuiBridge(self)
         self._pub_queue: list[str] = []
         self.setWindowTitle(getattr(config, "WINDOW_TITLE", "Лисичка — ядро"))
-        self.resize(int(getattr(config, "WINDOW_WIDTH", 780)), int(getattr(config, "WINDOW_HEIGHT", 700)))
+        self.resize(int(getattr(config, "WINDOW_WIDTH", 920)), int(getattr(config, "WINDOW_HEIGHT", 720)))
         self.setStyleSheet(WINDOW_QSS)
 
         central = QtWidgets.QWidget()
@@ -213,9 +233,14 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.setSpacing(8)
 
         top = QtWidgets.QHBoxLayout()
-        self.title_lab = QtWidgets.QLabel("🦊 Ассистент — ядро")
+        self.title_lab = QtWidgets.QLabel("🦊 Лисичка")
         self.title_lab.setStyleSheet("color: #f0c27a; font-size: 16px; font-weight: bold;")
         top.addWidget(self.title_lab)
+        self.mode_btn = QtWidgets.QPushButton()
+        self.mode_btn.setObjectName("modeBtn")
+        self.mode_btn.setToolTip("Компаньон 18+ ↔ работа. Или скажи «давай по делу» / «режим лисы».")
+        self.mode_btn.clicked.connect(self._toggle_mode)
+        top.addWidget(self.mode_btn)
         top.addStretch(1)
         self.status_dot = QtWidgets.QLabel("●")
         self.status_dot.setStyleSheet("color: #0f0; font-size: 14px;")
@@ -225,13 +250,31 @@ class ChatWindow(QtWidgets.QMainWindow):
         top.addWidget(self.status_text)
         layout.addLayout(top)
 
+        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        days_wrap = QtWidgets.QWidget()
+        days_lay = QtWidgets.QVBoxLayout(days_wrap)
+        days_lay.setContentsMargins(0, 0, 0, 0)
+        days_lay.setSpacing(4)
+        days_lab = QtWidgets.QLabel("Диалоги")
+        days_lab.setStyleSheet("color:#888; font-size:11px;")
+        days_lay.addWidget(days_lab)
+        self.days_list = QtWidgets.QListWidget()
+        self.days_list.setMaximumWidth(168)
+        self.days_list.itemClicked.connect(self._on_day_clicked)
+        days_lay.addWidget(self.days_list, 1)
+        split.addWidget(days_wrap)
+
         self.chat = QtWidgets.QTextBrowser()
         self.chat.setReadOnly(True)
         self.chat.setOpenExternalLinks(False)
         self.chat.setOpenLinks(False)
         self.chat.anchorClicked.connect(self._on_anchor)
         self.chat.setFont(QtGui.QFont("Segoe UI", 11))
-        layout.addWidget(self.chat, 1)
+        split.addWidget(self.chat)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setSizes([150, 770])
+        layout.addWidget(split, 1)
 
         self.attach_bar = QtWidgets.QLabel("")
         self.attach_bar.setStyleSheet("color:#9ad; font-size:12px;")
@@ -268,12 +311,12 @@ class ChatWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.footer)
 
         engine.app.state["gui"] = self
-        try:
-            engine.app.gui = self
-        except Exception:
-            pass
+        engine.app.gui = self
+        engine.app.window = self
+        self.refresh_mode_chrome()
+        self._refresh_days()
         self._append_sys("Ядро запущено. Подключение: " + str(getattr(config, "API_URL", "")))
-        self._append_sys("Вложения: кнопка 📎. Картинка в чате — клик = на весь экран.")
+        self._append_sys("Режим: кнопка сверху или «давай по делу» / «режим лисы». Картинка — клик на весь экран.")
 
     def show_dialog_resume(self, rows, note: str = "") -> None:
         """Показать хвост сохранённого диалога этого персонажа."""
@@ -282,9 +325,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         items = list(rows or [])
         if not items:
             return
-        shown = items[-8:]
+        shown = items[-16:]
         if len(items) > len(shown):
-            self._append_sys(f"…ещё {len(items) - len(shown)} реплик в памяти, в контекст уйдёт хвост + дневник прошлых дней")
+            self._append_sys(f"…ещё {len(items) - len(shown)} реплик в памяти, в контекст уйдёт хвост + дневник")
         for m in shown:
             role = str((m.get("role") if isinstance(m, dict) else "") or "")
             text = str((m.get("content") if isinstance(m, dict) else m) or "")
@@ -408,12 +451,31 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.chat.moveCursor(QtGui.QTextCursor.End)
 
     def _append_sys(self, text: str) -> None:
-        self._append_html(f'<span style="color:#888;">• {self._html_text(text)}</span>')
+        self._append_html(
+            '<div align="center" style="margin:6px 0;">'
+            f'<span style="color:#888;font-size:11px;">• {self._html_text(text)}</span></div>'
+        )
+
+    def _bubble(self, who: str, body: str, extra: str = "") -> str:
+        is_user = who == "Вы"
+        is_err = who == "Ошибка"
+        align = "right" if is_user else "left"
+        if is_err:
+            bg, name_c = "#4a2222", "#f66"
+        elif is_user:
+            bg, name_c = "#3d3428", "#f0c27a"
+        else:
+            bg, name_c = "#24332a", "#9ad7a0"
+        return (
+            f'<div align="{align}" style="margin:8px 4px;">'
+            f'<table cellpadding="9" cellspacing="0" bgcolor="{bg}" '
+            f'style="max-width:78%;border-radius:14px;">'
+            f'<tr><td>'
+            f'<div style="color:{name_c};font-size:11px;margin-bottom:3px;">{html.escape(who)}</div>'
+            f"{body}{extra}</td></tr></table></div>"
+        )
 
     def _append(self, who: str, text: str, files=None) -> None:
-        color = "#f0c27a" if who == "Вы" else "#9ad7a0"
-        if who == "Ошибка":
-            color = "#f66"
         text = _strip_anim(text) if who != "Вы" else (text or "")
         extra = ""
         for p in files or []:
@@ -421,9 +483,85 @@ class ChatWindow(QtWidgets.QMainWindow):
         text, marks = self._pull_file_marks(text)
         extra += marks
         body = self._html_text(text)
-        self._append_html(
-            f'<div style="margin:8px 0 12px 0;"><b style="color:{color};">{html.escape(who)}</b><br>{body}{extra}</div>'
-        )
+        self._append_html(self._bubble(who, body, extra))
+
+    def refresh_chrome(self) -> None:
+        plugs = ", ".join(self.engine.app.plugins.keys()) or "нет"
+        self.footer.setText(f"Плагины: {plugs}  |  {getattr(config, 'API_URL', '')}")
+        self.refresh_mode_chrome()
+        self._refresh_days()
+
+    def refresh_mode_chrome(self) -> None:
+        from core.mode import get_mode, label, WORK
+        m = get_mode(self.engine.app)
+        self.mode_btn.setText(label(m))
+        self.mode_btn.setProperty("work", "true" if m == WORK else "false")
+        self.mode_btn.style().unpolish(self.mode_btn)
+        self.mode_btn.style().polish(self.mode_btn)
+        cid = ""
+        if hasattr(self.engine.app, "get_active_character"):
+            cid = self.engine.app.get_active_character()
+        else:
+            cid = str(getattr(config, "ACTIVE_CHARACTER", "") or "")
+        self.title_lab.setText(f"🦊 {cid or 'Лисичка'}")
+
+    def _toggle_mode(self) -> None:
+        from core.mode import get_mode, set_mode, WORK, COMPANION, label
+        cur = get_mode(self.engine.app)
+        nxt = WORK if cur != WORK else COMPANION
+        set_mode(self.engine.app, nxt)
+        self.refresh_mode_chrome()
+        self._append_sys(f"Режим: {label(nxt)}")
+
+    def _refresh_days(self) -> None:
+        self.days_list.clear()
+        today = QtWidgets.QListWidgetItem("сегодня")
+        today.setData(QtCore.Qt.UserRole, "today")
+        self.days_list.addItem(today)
+        mem = None
+        try:
+            mem = self.engine.app.plugins.get("memory")
+        except Exception:
+            mem = None
+        store = getattr(mem, "store", None) if mem else None
+        if store is None or not hasattr(store, "list_chat_days"):
+            return
+        try:
+            days = store.list_chat_days(21) or []
+        except Exception as e:
+            print(f"days list: {e}", flush=True)
+            return
+        for row in days:
+            day = str(row.get("day") or "")
+            n = int(row.get("n") or 0)
+            if not day:
+                continue
+            it = QtWidgets.QListWidgetItem(f"{day}  ({n})")
+            it.setData(QtCore.Qt.UserRole, day)
+            self.days_list.addItem(it)
+
+    def _on_day_clicked(self, item) -> None:
+        key = item.data(QtCore.Qt.UserRole) if item is not None else None
+        if not key:
+            return
+        mem = self.engine.app.plugins.get("memory") if self.engine.app.plugins else None
+        store = getattr(mem, "store", None) if mem else None
+        if key == "today":
+            rows = []
+            if mem is not None and hasattr(mem, "hydrate_engine"):
+                rows = mem.hydrate_engine(self.engine) or []
+            self.chat.clear()
+            self.show_dialog_resume(rows, "Текущий диалог")
+            return
+        if store is None or not hasattr(store, "messages_for_day"):
+            return
+        try:
+            rows = store.messages_for_day(str(key)) or []
+        except Exception as e:
+            self._append_sys(f"Не открылся день: {e}")
+            return
+        self.chat.clear()
+        self.show_dialog_resume(rows, f"День {key}")
 
     def post(self, fn) -> None:
         try:
@@ -471,9 +609,7 @@ class ChatWindow(QtWidgets.QMainWindow):
         self._stream_raw = ""
         self.chat.moveCursor(QtGui.QTextCursor.End)
         self._stream_pos = self.chat.textCursor().position()
-        self._append_html(
-            '<div style="margin:8px 0 12px 0;"><b style="color:#9ad7a0;">Ассистент</b><br>'
-        )
+        self._append_html(self._bubble("Ассистент", ""))
 
     def _feed_assistant_stream(self, chunk: str) -> None:
         if not chunk:
@@ -499,11 +635,8 @@ class ChatWindow(QtWidgets.QMainWindow):
             self.chat.setTextCursor(cur)
         except Exception:
             pass
-        color = "#9ad7a0"
         body = _format_chat_html(raw)
-        self._append_html(
-            f'<div style="margin:8px 0 12px 0;"><b style="color:{color};">Ассистент</b><br>{body}{extra}</div>'
-        )
+        self._append_html(self._bubble("Ассистент", body, extra))
 
     def _voice_plugin(self):
         return self.engine.app.plugins.get("voice") or self.engine.app.state.get("voice_plugin")
@@ -541,16 +674,17 @@ class ChatWindow(QtWidgets.QMainWindow):
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self)
         if dlg.exec_():
-            self.footer.setText(
-                f"Плагины: {', '.join(self.engine.app.plugins.keys()) or 'нет'}  |  {getattr(config, 'API_URL', '')}"
-            )
+            self.refresh_chrome()
             try:
                 from core.llm_client import LLMClient
+                from core.mode import set_mode
                 self.engine.llm = LLMClient.from_config(config)
                 self.engine.app.llm = self.engine.llm
                 self.engine.system_prompt = getattr(config, "SYSTEM_PROMPT", self.engine.system_prompt)
-            except Exception:
-                pass
+                set_mode(self.engine.app, str(getattr(config, "ASSISTANT_MODE", "companion") or "companion"))
+                self.refresh_mode_chrome()
+            except Exception as e:
+                print(f"settings apply: {e}", flush=True)
 
     def _push_attachments_state(self, files):
         app = self.engine.app

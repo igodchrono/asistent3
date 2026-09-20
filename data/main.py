@@ -44,7 +44,7 @@ def main() -> None:
         active = getattr(config, "ACTIVE_CHARACTER", None)
         if ids:
             if not active or active not in ids:
-                config.ACTIVE_CHARACTER = ids[0]
+                config.ACTIVE_CHARACTER = "лисичка" if "лисичка" in ids else ids[0]
             print(f"characters: {ids} active={config.ACTIVE_CHARACTER}", flush=True)
         else:
             print("characters: (нет папок personas/characters/) — вкладка «Персонаж» скрыта", flush=True)
@@ -96,6 +96,11 @@ def main() -> None:
 
     ctx = AppContext(config)
     ctx.llm = LLMClient.from_config(config)
+    try:
+        from core.mode import get_mode
+        ctx.state["assistant_mode"] = get_mode(config)
+    except Exception as e:
+        print(f"mode boot: {e}", flush=True)
 
     if splash:
         splash.say("плагины", 40)

@@ -26,11 +26,15 @@ PLUGIN_SETTINGS = {}
 
 # UI
 WINDOW_TITLE = "Лисичка"
-WINDOW_WIDTH = 720
-WINDOW_HEIGHT = 640
+WINDOW_WIDTH = 920
+WINDOW_HEIGHT = 720
 
 SETTINGS_FILE = str(DATA_DIR / "settings.json")
 
 # персонаж
-ACTIVE_CHARACTER = "default"
+ACTIVE_CHARACTER = "лисичка"
 ACTIVE_USER = "default"
+
+# companion = 18+ личный, work = задача сначала, без флирта
+ASSISTANT_MODE = "companion"
+HISTORY_TAIL = 40

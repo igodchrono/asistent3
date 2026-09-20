@@ -117,7 +117,12 @@ class PluginImpl(Plugin):
         elif any(w in low for w in ("спокойн", "просто поговор", "обними")):
             self._set_mood(app, "calm", 0.55)
         elif any(w in low for w in ("секс", "голая", "18+", "пошл", "хочу тебя", "раздень")):
-            if app.state.get("character_nsfw"):
+            try:
+                from core.mode import is_work
+                work = is_work(app)
+            except Exception:
+                work = False
+            if app.state.get("character_nsfw") and not work:
                 self._set_mood(app, "flirty", 0.85)
         return None
 
@@ -303,8 +308,14 @@ class PluginImpl(Plugin):
 
     def _react_scene_mood(self, app: AppContext, scene: str) -> None:
         nsfw_ok = bool(app.state.get("character_nsfw"))
+        try:
+            from core.mode import is_work
+            if is_work(app):
+                nsfw_ok = False
+        except Exception:
+            pass
         if scene == "nsfw":
-            self._set_mood(app, "flirty" if nsfw_ok else "shy", 0.8 if nsfw_ok else 0.6)
+            self._set_mood(app, "flirty" if nsfw_ok else "curious", 0.8 if nsfw_ok else 0.6)
         elif scene == "coding":
             self._set_mood(app, "curious", 0.65)
         elif scene == "movie":
@@ -315,19 +326,24 @@ class PluginImpl(Plugin):
     def _maybe_suggest(self, app: AppContext, scene: str, title: str, conf: float) -> None:
         if conf < 0.65:
             return
+        try:
+            from core.mode import is_work
+            work = is_work(app)
+        except Exception:
+            work = False
+        if work and scene in ("nsfw", "movie"):
+            return
         if scene in ("idle", "browsing", "chat"):
             return
         cd = int(app.get_plugin_setting(self.id, "suggest_cooldown_min", 12) or 12) * 60
         if time.time() - self._last_suggest_at < cd:
             return
-        # не во время busy
         window = getattr(app, "window", None)
         if window is not None and getattr(window, "_busy", False):
             return
         chance = int(app.get_plugin_setting(self.id, "suggest_chance", 35) or 35)
         if random.randint(1, 100) > chance:
             return
-        # не сразу при старте сцены — подождать 30с
         if time.time() - self._last_scene_at < 30:
             return
         text = self._suggest_text(app, scene, title)

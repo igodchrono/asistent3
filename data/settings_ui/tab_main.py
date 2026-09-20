@@ -51,6 +51,18 @@ class MainTabMixin:
         self.max_tokens_edit = QtWidgets.QLineEdit()
         layout.addWidget(self.max_tokens_edit)
 
+        layout.addWidget(QtWidgets.QLabel("Режим (компаньон 18+ / работа):"))
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.addItem("🦊 Компаньон — личный, 18+", "companion")
+        self.mode_combo.addItem("💼 Работа — сначала задача, без флирта", "work")
+        layout.addWidget(self.mode_combo)
+
+        layout.addWidget(QtWidgets.QLabel("Реплик в контексте (12–80):"))
+        self.history_tail_spin = QtWidgets.QSpinBox()
+        self.history_tail_spin.setRange(12, 80)
+        self.history_tail_spin.setValue(40)
+        layout.addWidget(self.history_tail_spin)
+
         layout.addWidget(QtWidgets.QLabel("System prompt (ядро):"))
         self.system_edit = QtWidgets.QPlainTextEdit()
         self.system_edit.setMaximumHeight(120)
@@ -145,6 +157,13 @@ class MainTabMixin:
         self.model_combo.addItem(str(getattr(config, "MODEL_NAME", "") or "local-model"))
         self.temperature_edit.setText(str(getattr(config, "TEMPERATURE", 0.4)))
         self.max_tokens_edit.setText(str(getattr(config, "MAX_TOKENS", 1000)))
+        mode = str(getattr(config, "ASSISTANT_MODE", "companion") or "companion")
+        idx = self.mode_combo.findData(mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        try:
+            self.history_tail_spin.setValue(int(getattr(config, "HISTORY_TAIL", 40) or 40))
+        except (TypeError, ValueError):
+            self.history_tail_spin.setValue(40)
         self.system_edit.setPlainText(str(getattr(config, "SYSTEM_PROMPT", "") or ""))
         QtCore.QTimer.singleShot(300, self.load_models_list)
 
@@ -163,5 +182,7 @@ class MainTabMixin:
             "MODEL_NAME": self.model_combo.currentText().strip(),
             "TEMPERATURE": temp,
             "MAX_TOKENS": tokens,
+            "ASSISTANT_MODE": str(self.mode_combo.currentData() or "companion"),
+            "HISTORY_TAIL": int(self.history_tail_spin.value()),
             "SYSTEM_PROMPT": self.system_edit.toPlainText(),
         }

@@ -167,6 +167,17 @@ class PluginImpl(Plugin):
         self._cycle_i = 0
         self._idle_timer = None
 
+    def _nsfw_ok(self) -> bool:
+        if not self._nsfw:
+            return False
+        try:
+            from core.mode import is_work
+            if self.app is not None and is_work(self.app):
+                return False
+        except Exception:
+            pass
+        return True
+
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state.setdefault("emotion", "idle")
@@ -347,7 +358,7 @@ class PluginImpl(Plugin):
         family = family_of(family)
         if family in _FALLBACK and family not in names:
             family = _FALLBACK[family]
-        if not self._nsfw and family in _NSFW_FAMILIES:
+        if not self._nsfw_ok() and family in _NSFW_FAMILIES:
             family = self._forbid_fallback
         pool = []
         for n in names:
@@ -402,12 +413,12 @@ class PluginImpl(Plugin):
             keys = item.get("keys") or []
             anim = str(item.get("anim") or "")
             if anim and any(key_hit(low, k) for k in keys):
-                if not self._nsfw and family_of(anim) in _NSFW_FAMILIES:
+                if not self._nsfw_ok() and family_of(anim) in _NSFW_FAMILIES:
                     return self._forbid_fallback
                 return anim
         for keys, anim in _POSE_KEYS:
             if any(key_hit(low, k) for k in keys):
-                if not self._nsfw and anim in _NSFW_FAMILIES:
+                if not self._nsfw_ok() and anim in _NSFW_FAMILIES:
                     return self._forbid_fallback
                 return anim
         return ""
@@ -419,7 +430,7 @@ class PluginImpl(Plugin):
         if intent in _INTENT_ANIM:
             return self._resolve(_INTENT_ANIM[intent])
         families = list(_MOOD_FAMILIES.get(mood, (mood, "idle")))
-        if not self._nsfw:
+        if not self._nsfw_ok():
             families = [f for f in families if f not in _NSFW_FAMILIES]
         pool: List[str] = []
         for fam in families:
@@ -428,7 +439,7 @@ class PluginImpl(Plugin):
         unused_all = [n for n in names if n not in self._recent]
         if unused_all and random.random() < 0.18:
             extra = unused_all
-            if not self._nsfw:
+            if not self._nsfw_ok():
                 extra = [n for n in extra if family_of(n) not in _NSFW_FAMILIES]
             if extra:
                 pool.extend(extra)

@@ -9,6 +9,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .llm_client import LLMClient
 from .plugin_api import AppContext, HookResult
+from .intents import classify as rule_classify, sanitize_intent, strip_search_fluff
+from . import mode as assistant_mode
 
 # один поток: tools не блокируют GUI, state не гоняется параллельно
 _TOOL_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool")
@@ -106,10 +108,7 @@ class ChatEngine:
         self.system_prompt = getattr(app.config, "SYSTEM_PROMPT", "") or "Ты полезный ассистент."
         app.state.setdefault("context", {})
         app.state["engine"] = self
-        try:
-            app.engine = self
-        except Exception:
-            pass
+        app.engine = self
 
     def _ctx(self) -> Dict[str, Any]:
         st = self.app.state
@@ -131,6 +130,7 @@ class ChatEngine:
             ),
             "nsfw": bool(st.get("character_nsfw")),
             "emotion": str(st.get("emotion") or "neutral"),
+            "mode": assistant_mode.get_mode(self.app),
         }
 
     def _context_block(self) -> str:
@@ -152,12 +152,12 @@ class ChatEngine:
             print(f"intent fast: {fast}", flush=True)
             return fast
         try:
-            from .intents import classify as rule_classify
             ruled = rule_classify(text, self._ctx())
         except Exception as e:
             print(f"intent rules failed: {e}", flush=True)
             ruled = None
         if ruled is not None:
+            ruled = sanitize_intent(ruled)
             print(f"intent rules: {ruled.get('intent')} args={ruled.get('args')}", flush=True)
             return ruled
         ctx = self._context_block()
@@ -172,7 +172,17 @@ class ChatEngine:
         except Exception as e:
             print(f"intent: classify failed: {e}", flush=True)
             return {"intent": "chat", "args": {}, "speak": ""}
-        parsed = self._parse_intent(raw)
+        parsed = sanitize_intent(self._parse_intent(raw))
+        if parsed.get("intent") == "chat":
+            # маленькая модель часто говорит chat на «найди X» — ещё раз правила
+            try:
+                again = rule_classify(text, self._ctx())
+            except Exception:
+                again = None
+            if again is not None and sanitize_intent(again).get("intent") != "chat":
+                parsed = sanitize_intent(again)
+                print(f"intent llm overridden by rules: {parsed}", flush=True)
+                return parsed
         print(f"intent llm: {parsed.get('intent')} args={parsed.get('args')}", flush=True)
         return parsed
 
@@ -352,10 +362,8 @@ class ChatEngine:
         return head + tail
 
     def _memory_plugin(self):
-        try:
-            return (self.app.plugins or {}).get("memory")
-        except Exception:
-            return None
+        plugins = getattr(self.app, "plugins", None) or {}
+        return plugins.get("memory")
 
     def _remember(self, role: str, content: str) -> None:
         mem = self._memory_plugin()
@@ -363,28 +371,15 @@ class ChatEngine:
             return
         if hasattr(self.app, "is_plugin_enabled") and not self.app.is_plugin_enabled("memory"):
             return
-        try:
-            if not self.app.get_plugin_setting("memory", "enabled", True):
-                return
-        except Exception:
-            pass
+        if not self.app.get_plugin_setting("memory", "enabled", True):
+            return
         try:
             mem.record(role, content)
         except Exception as e:
             print(f"memory record: {e}", flush=True)
 
-    def _trim_history(self) -> None:
-        n = 16
-        mem = self._memory_plugin()
-        if mem is not None and hasattr(mem, "_tail_n"):
-            try:
-                n = int(mem._tail_n(self.app) or 16)
-            except Exception:
-                n = 16
-        if len(self.history) > n:
-            self.history = self.history[-n:]
-
     def _schedule_summary(self) -> None:
+
         mem = self._memory_plugin()
         if mem is None or not hasattr(mem, "maybe_summarize"):
             return
@@ -411,9 +406,9 @@ class ChatEngine:
                 mode = "web"
 
         # быстрая чистка без LLM
-        q = self._strip_search_fluff(raw_q)
+        q = strip_search_fluff(raw_q)
         if len(q) < 3:
-            q = self._strip_search_fluff(user_text)
+            q = strip_search_fluff(user_text)
 
         # если всё ещё похоже на целую разговорную фразу — спросить LLM коротко
         need_llm = (
@@ -436,7 +431,7 @@ class ChatEngine:
                     temperature=0.1,
                     max_tokens=40,
                 )
-                refined = self._strip_search_fluff((refined or "").strip().strip('"').strip("'"))
+                refined = strip_search_fluff((refined or "").strip().strip('"').strip("'"))
                 if len(refined) >= 2:
                     q = refined
             except Exception as e:
@@ -446,28 +441,13 @@ class ChatEngine:
         args["mode"] = mode
         return args
 
-    @staticmethod
-    def _strip_search_fluff(text: str) -> str:
-        import re as _re
-        t = (text or "").strip()
-        # убрать обёртки
-        patterns = [
-            r"^\s*(пожалуйста\s*[,:]?\s*)",
-            r"^\s*(можешь\s+|можете\s+)",
-            r"^\s*(найди|найти|поищи|поискать|погугли|загугли|поиск|поищу)\s+",
-            r"^\s*(в\s+интернете|в\s+гугле|в\s+google|в\s+сети|онлайн)\s*",
-            r"\s*(в\s+интернете|в\s+гугле|в\s+google|пожалуйста)\s*$",
-            r"^\s*(мне\s+|для\s+меня\s+)",
-            r"^\s*(картинки|картинку|фото|изображения|видео)\s+(по\s+|про\s+|с\s+)?",
-            r"^\s*(как\s+найти)\s+",
-        ]
-        prev = None
-        while prev != t:
-            prev = t
-            for p in patterns:
-                t = _re.sub(p, " ", t, flags=_re.I)
-            t = " ".join(t.split())
-        return t.strip(" .,!?:;—-")
+    def _history_tail(self) -> int:
+        return assistant_mode.history_tail(self.app, 40)
+
+    def _trim_history(self) -> None:
+        n = self._history_tail()
+        if len(self.history) > n:
+            self.history = self.history[-n:]
 
 
     async def handle_user(self, text: str) -> AsyncIterator[str]:
@@ -481,6 +461,15 @@ class ChatEngine:
         self.app.state["last_user_activity"] = _time.time()
         self.app.state["last_chat_activity"] = _time.time()
         self.app.state["last_user_text"] = text
+        switched = assistant_mode.detect_mode_switch(text)
+        if switched:
+            prev_mode = assistant_mode.get_mode(self.app)
+            assistant_mode.set_mode(self.app, switched)
+            gui = getattr(self.app, "window", None) or self.app.state.get("gui")
+            if gui is not None and hasattr(gui, "refresh_mode_chrome"):
+                gui.refresh_mode_chrome()
+            if switched != prev_mode:
+                print(f"mode switch: {prev_mode} → {switched}", flush=True)
 
         # 1) редкие sync-перехваты (голос, подтверждения pc) — если плагин сам handled
         plugs = self._active_plugins()
@@ -619,20 +608,15 @@ class ChatEngine:
                 system += "\n--- служебное (не важнее карточки) ---\n" + extra_sys + "\n"
         else:
             system = self.system_prompt or "Ты живой ассистент."
-        system = (system or "") + "\n\n" + self._context_block()
+        system = (system or "") + "\n\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
+        system = system + "\n\n" + self._context_block()
         system += (
             "\nНе предлагай «найти похожее» без смысла. "
             "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
         )
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
-        tail = 16
-        mem = self._memory_plugin()
-        if mem is not None and hasattr(mem, "_tail_n"):
-            try:
-                tail = int(mem._tail_n(self.app) or 16)
-            except Exception:
-                tail = 16
+        tail = self._history_tail()
         for m in self.history[-tail:]:
             messages.append({"role": m["role"], "content": m["content"]})
 
@@ -684,7 +668,11 @@ class ChatEngine:
         except Exception:
             card = ""
         system = card or self.system_prompt or "Ты живой ассистент."
+        system += "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
         system += "\nОдно короткое сообщение от себя. Без канцелярита, без «как ИИ»."
+        if assistant_mode.is_work(self.app):
+            system += " Рабочий режим: без флирта."
+
         try:
             raw = await self.llm.chat_once(
                 [
