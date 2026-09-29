@@ -48,17 +48,20 @@ _SCENE_HINTS = {
 class PluginImpl(Plugin):
     id = "companion"
     name = "Живой компаньон"
-    version = "1.1.0"
-    description = "Время, настроение, профиль, сцены экрана, паттерны"
+    version = "1.2.0"
+    description = "Время, одно настроение, сцена экрана и реплики в чат"
     settings_tab = "own"
     settings_tab_title = "Компаньон"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField("scene_interval_sec", "Проверка экрана (сек)", "int", 45, min_value=15, max_value=300),
-        SettingField("suggest_cooldown_min", "Пауза между предложениями (мин)", "int", 12, min_value=3, max_value=120),
-        SettingField("suggest_chance", "Шанс предложения %", "int", 35, min_value=0, max_value=100),
+        SettingField("suggest_cooldown_min", "Пауза между предложениями (мин)", "int", 6, min_value=1, max_value=120),
+        SettingField("suggest_chance", "Шанс предложения %", "int", 70, min_value=0, max_value=100),
         SettingField("mood_drift", "Смена настроения со временем", "bool", True),
         SettingField("proactive", "Проактивные реплики по сцене", "bool", True),
+        SettingField("comment_browsing", "Комментировать браузер тоже", "bool", True),
+        SettingField("use_llm_comments", "Текст реплики через LLM", "bool", True),
+        SettingField("debug_log", "Лог пропусков в консоль", "bool", True),
     ]
 
     def __init__(self) -> None:
@@ -83,7 +86,7 @@ class PluginImpl(Plugin):
             self._timer.start()
         except Exception as e:
             print(f"companion: timer {e}", flush=True)
-        print("🧠 companion 1.1: time+mood+scene+patterns", flush=True)
+        print("companion 1.2: mood+scene comments → chat", flush=True)
 
     def on_shutdown(self, app: AppContext) -> None:
         if self._timer is not None:
@@ -196,12 +199,20 @@ class PluginImpl(Plugin):
         app.state["companion_mood"] = mood
         app.state["companion_mood_energy"] = energy
         app.state["companion_mood_at"] = time.time()
+        app.state["emotion"] = mood
 
     def _set_mood(self, app: AppContext, mood: str, energy: Optional[float]) -> None:
         app.state["companion_mood"] = mood
+        app.state["emotion"] = mood
         if energy is not None:
             app.state["companion_mood_energy"] = float(energy)
         app.state["companion_mood_at"] = time.time()
+        persona = app.plugins.get("persona") or app.state.get("emotion_plugin")
+        if persona is not None and hasattr(persona, "set_context"):
+            try:
+                persona.set_context(app, mood, "companion_mood")
+            except Exception as e:
+                print(f"companion: mood sprite {e}", flush=True)
 
     def _profile_lines(self, app: AppContext) -> List[str]:
         lines: List[str] = []
@@ -287,20 +298,27 @@ class PluginImpl(Plugin):
             self._react_scene_mood(app, scene)
             self._last_scene = scene
             self._last_scene_at = time.time()
+            app.state["companion_scene_changed_at"] = time.time()
         if app.get_plugin_setting(self.id, "proactive", True):
             self._maybe_suggest(app, scene, title, conf)
 
+    @staticmethod
+    def _own_title(title: str) -> bool:
+        low = (title or "").lower()
+        return any(k in low for k in ("лисич", "lisichka", "asistent"))
+
     def _classify_scene(self, app: AppContext) -> tuple:
         title = self._fg_title()
+        if self._own_title(title):
+            prev = str(app.state.get("screen_scene") or "idle")
+            return prev, "", 0.0
         low = title.lower()
-        # nsfw path / filename in title
         for scene, keys in _SCENE_HINTS.items():
             if any(k in low for k in keys):
                 conf = 0.82 if scene == "nsfw" else 0.7
                 return scene, title, conf
-        # fallback: screen_react emotion context
         ctx = str(app.state.get("screen_react_context") or "")
-        if ctx:
+        if ctx and not self._own_title(ctx):
             for scene, keys in _SCENE_HINTS.items():
                 if any(k in ctx.lower() for k in keys):
                     return scene, title or ctx[:80], 0.6
@@ -323,8 +341,36 @@ class PluginImpl(Plugin):
         elif scene == "writing":
             self._set_mood(app, "curious", 0.6)
 
+    def _dbg(self, app: AppContext, msg: str) -> None:
+        if app.get_plugin_setting(self.id, "debug_log", True):
+            print(f"companion: {msg}", flush=True)
+
+    @staticmethod
+    def _title_interesting(title: str) -> bool:
+        t = (title or "").strip()
+        if len(t) < 8:
+            return False
+        low = t.lower()
+        bare = {
+            "google chrome", "chrome", "mozilla firefox", "firefox",
+            "microsoft edge", "edge", "opera", "brave", "проводник",
+        }
+        core = low
+        for tail in (" - google chrome", " — google chrome", " - mozilla firefox",
+                     " - microsoft edge", " - opera", " - brave"):
+            if core.endswith(tail):
+                core = core[: -len(tail)].strip()
+        return core not in bare and low not in bare
+
     def _maybe_suggest(self, app: AppContext, scene: str, title: str, conf: float) -> None:
-        if conf < 0.65:
+        if not title or self._own_title(title):
+            self._dbg(app, "skip: своё окно или пустой заголовок")
+            return
+        if not self._title_interesting(title) and scene in ("idle", "browsing", "chat"):
+            self._dbg(app, f"skip: пустой заголовок «{title[:50]}» scene={scene}")
+            return
+        if conf < 0.55 and scene == "idle":
+            self._dbg(app, f"skip: low conf={conf:.2f}")
             return
         try:
             from core.mode import is_work
@@ -332,63 +378,135 @@ class PluginImpl(Plugin):
         except Exception:
             work = False
         if work and scene in ("nsfw", "movie"):
+            self._dbg(app, "skip: work mode")
             return
-        if scene in ("idle", "browsing", "chat"):
+        if scene == "browsing" and not app.get_plugin_setting(self.id, "comment_browsing", True):
+            self._dbg(app, "skip: browsing off")
             return
-        cd = int(app.get_plugin_setting(self.id, "suggest_cooldown_min", 12) or 12) * 60
-        if time.time() - self._last_suggest_at < cd:
+        cd = int(app.get_plugin_setting(self.id, "suggest_cooldown_min", 6) or 6) * 60
+        wait = time.time() - self._last_suggest_at
+        if self._last_suggest_at and wait < cd:
+            self._dbg(app, f"skip: cooldown {int(wait)}s < {cd}s")
             return
-        window = getattr(app, "window", None)
-        if window is not None and getattr(window, "_busy", False):
+        window = getattr(app, "window", None) or app.state.get("gui")
+        if window is None:
+            self._dbg(app, "skip: no window")
             return
-        chance = int(app.get_plugin_setting(self.id, "suggest_chance", 35) or 35)
-        if random.randint(1, 100) > chance:
+        if getattr(window, "_busy", False):
+            self._dbg(app, "skip: chat busy")
             return
-        if time.time() - self._last_scene_at < 30:
+        changed_at = float(app.state.get("companion_scene_changed_at") or self._last_scene_at or 0)
+        age = time.time() - changed_at if changed_at else 999
+        if age < 8:
+            self._dbg(app, f"skip: scene fresh {age:.0f}s")
             return
-        text = self._suggest_text(app, scene, title)
-        if not text:
+        chance = int(app.get_plugin_setting(self.id, "suggest_chance", 70) or 70)
+        fresh = age < 120
+        if not fresh and random.randint(1, 100) > max(0, min(100, chance)):
+            self._dbg(app, "skip: chance")
             return
         self._last_suggest_at = time.time()
-        self._publish(app, text)
-        print(f"companion: suggest scene={scene} «{text[:60]}»", flush=True)
+        text = self._suggest_text(app, scene, title)
+        if not text:
+            self._dbg(app, f"queued/empty scene={scene}")
+            return
+        ok = self._publish(app, text)
+        self._dbg(app, f"{'sent' if ok else 'publish-fail'} scene={scene} «{text[:80]}»")
 
     def _suggest_text(self, app: AppContext, scene: str, title: str) -> str:
-        # короткие живые фразы без «Как я могу помочь»
+        static = self._static_line(scene, title)
+        if not app.get_plugin_setting(self.id, "use_llm_comments", True):
+            return static
+        window = getattr(app, "window", None) or app.state.get("gui")
+        engine = None
+        if window is not None:
+            engine = getattr(window, "engine", None)
+        engine = engine or app.state.get("engine") or getattr(app, "engine", None)
+        if engine is None or not hasattr(engine, "generate_proactive"):
+            return static
+        instruction = (
+            "Одно короткое сообщение в чат про то, что сейчас на экране. "
+            f"Сцена: {scene}. Заголовок окна: «{(title or '')[:120]}». "
+            "Только то, что есть в заголовке. Одно предложение, без «как ИИ»."
+        )
+        try:
+            import asyncio
+
+            async def _run():
+                try:
+                    out = await engine.generate_proactive(instruction)
+                except Exception as e:
+                    print(f"companion: llm comment {e}", flush=True)
+                    out = ""
+                text = (out or "").strip() or static
+                if text:
+                    self._publish(app, text)
+
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                return static
+            if loop.is_running():
+                asyncio.ensure_future(_run())
+                return ""
+            return static
+        except Exception as e:
+            print(f"companion: llm suggest {e}", flush=True)
+            return static
+
+    def _static_line(self, scene: str, title: str) -> str:
+        hint = (title or "").split(" - ")[0].split(" — ")[0].strip()[:60]
         if scene == "coding":
             opts = [
-                "Вижу, ты в коде. Если застрянешь на ошибке — кинь строку, разберём.",
-                "Режим IDE… Могу глянуть логику функции, если покажешь кусок.",
-                "Пахнет отладкой. Нужен свежий взгляд — позови.",
+                f"Ты в «{hint}». Если ошибка заела — кинь кусок." if hint else "Вижу код. Застрянешь — позови.",
+                "Пахнет отладкой. Нужен свежий взгляд — я тут.",
             ]
         elif scene == "writing":
             opts = [
-                "Пишешь текст? Могу подправить стиль или структуру — скажи.",
-                "Если нужен абзац яснее или короче — покажи фрагмент.",
+                "Пишешь текст? Могу подправить кусок, если покажешь.",
+                "Документ открыт. Скажи, если нужно короче.",
             ]
         elif scene == "movie":
             opts = [
-                "Похоже, что-то смотришь. Как оно?",
-                "Кино-режим. Я рядом, без спойлеров.",
+                f"«{hint}» на экране. Как оно?" if hint else "Что-то смотришь. Как оно?",
+                "Я рядом, без спойлеров.",
             ]
         elif scene == "nsfw":
+            opts = ["На экране что-то яркое. Если хочешь поговорить — я рядом."]
+        elif scene == "browsing":
             opts = [
-                "На экране что-то яркое. Если хочешь поговорить — я рядом.",
+                f"Открыто: {hint}." if hint else "Сидишь в браузере.",
+                f"Листаешь «{hint}». Найти или сохранить?" if hint else "Нужно сузить поиск — скажи.",
             ]
+        elif scene == "chat":
+            opts = ["Ты в переписке. Я рядом, без спама."]
         else:
-            return ""
+            if not hint:
+                return ""
+            opts = [f"Сейчас у тебя «{hint}». Как оно?"]
         return random.choice(opts)
 
-    def _publish(self, app: AppContext, text: str) -> None:
+    def _publish(self, app: AppContext, text: str) -> bool:
+        text = (text or "").strip()
+        if not text:
+            return False
         window = getattr(app, "window", None) or app.state.get("gui")
-        if window is None or not text:
-            return
+        if window is None:
+            print("companion: publish skip — нет окна чата", flush=True)
+            return False
         try:
             if hasattr(window, "publish_assistant_message"):
                 window.publish_assistant_message(text)
-                return
+                return True
+            if hasattr(window, "post") and hasattr(window, "_append"):
+                window.post(lambda t=text: window._append("Ассистент", t))
+                return True
+            if hasattr(window, "_append"):
+                window._append("Ассистент", text)
+                return True
         except Exception as e:
             print(f"companion: publish {e}", flush=True)
+        return False
 
     def _mood_drift(self, app: AppContext) -> None:
         last = float(app.state.get("companion_mood_at") or 0)

@@ -217,13 +217,31 @@ class PluginImpl(Plugin):
         self._load_active()
 
     def set_context(self, app: AppContext, emotion: str, source: str = "") -> None:
-        app.state["emotion"] = emotion
-        app.state["emotion_animation"] = emotion
+        raw = str(emotion or "idle").lower().strip()
+        fam = family_of(raw)
+        app.state["emotion"] = fam
+        app.state["emotion_animation"] = raw
         app.state["emotion_source"] = source
-        if source == "companion_mood":
+        if source in ("companion_mood", "user", "chat"):
+            app.state["companion_mood"] = fam
+            app.state["companion_mood_at"] = time.time()
+        elif source in ("screen", "auto_message", "web_search"):
+            last = float(app.state.get("companion_mood_at") or 0)
+            cur = str(app.state.get("companion_mood") or "")
+            if (time.time() - last > 90) or cur in ("", "idle", "neutral", "calm", "curious"):
+                mapped = {
+                    "searching": "curious",
+                    "thinking": "curious",
+                    "neutral": "calm",
+                    "idle": "calm",
+                }.get(fam, fam)
+                app.state["companion_mood"] = mapped
+                app.state["companion_mood_at"] = time.time()
+        locked = time.time() < self._pose_lock_until
+        if locked and source in ("screen", "companion_mood", "auto_message", "web_search"):
             return
         if app.get_plugin_setting(self.id, "show_avatar", True):
-            self.apply_emotion(emotion)
+            self.apply_emotion(raw)
 
     def set_animation(self, name: str, app=None) -> None:
         self.apply_emotion(name)
@@ -255,16 +273,13 @@ class PluginImpl(Plugin):
         mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
         anim = str(app.state.get("emotion_animation") or mood)
         fams = group_families(self._live_names())
-        compact = ", ".join(f"{k}({len(v)})" for k, v in sorted(fams.items()) if v)
+        shown = [k for k, v in sorted(fams.items()) if v][:18]
+        compact = ", ".join(f"{k}({len(fams[k])})" for k in shown) or "idle"
         pose = str(app.state.get("persona_pose_request") or "")
-        pose_line = f" Пользователь просит позу «{family_of(pose)}» — ответь в ней и поставь [ANIM:{family_of(pose)}]." if pose else ""
+        pose_line = f" Пользователь просит позу «{family_of(pose)}» — поставь [ANIM:{family_of(pose)}]." if pose else ""
         block = (
-            f"\n\n[НАСТРОЕНИЕ] {mood}, кадр сейчас {anim}. "
-            f"Семьи кадров: {compact or 'idle'}.{pose_line}\n"
-            "В конце ответа ОДИН тег [ANIM:семья] (idle/happy/sly/pointing/dance/love/flirty/"
-            "undress/lingerie/teasing/thinking/searching/shy/angry/proud/jealous/giggling/"
-            "surprised/sleepy/mischievous/bath/bed). Система сама возьмёт свежий кадр семьи. "
-            "Не повторяй idle каждый раз. Поза по просьбе важнее болтовни.\n"
+            f"\n\n[НАСТРОЕНИЕ] {mood}, кадр {anim}. Семьи: {compact}.{pose_line}\n"
+            "В конце ответа один [ANIM:семья]. Не залипай на idle. Поза по просьбе важнее болтовни.\n"
         )
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = str(messages[0].get("content") or "") + block
@@ -276,8 +291,11 @@ class PluginImpl(Plugin):
         tags = _ANIM_RE.findall(reply or "")
         name = tags[-1].lower().strip() if tags else ""
         if name:
+            fam = family_of(name)
             app.state["emotion_animation"] = name
-            app.state["emotion"] = family_of(name)
+            app.state["emotion"] = fam
+            app.state["companion_mood"] = fam
+            app.state["companion_mood_at"] = time.time()
             print(f"persona [ANIM:] → {name}", flush=True)
         pose = str(app.state.get("persona_pose_request") or "")
         if not name:

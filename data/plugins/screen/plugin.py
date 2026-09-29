@@ -87,7 +87,7 @@ class PluginImpl(Plugin):
         if not app.get_plugin_setting(self.id, "react", True):
             return
         title = self._fg_title()
-        if not title:
+        if not title or self._own_title(title):
             return
         app.state["screen_react_title"] = title
         app.state["screen_react_context"] = title
@@ -160,6 +160,11 @@ class PluginImpl(Plugin):
         if self._vision and hasattr(self._vision, "collect_settings_tab"):
             return self._vision.collect_settings_tab()
         return {}
+
+    @staticmethod
+    def _own_title(title: str) -> bool:
+        low = (title or "").lower()
+        return any(k in low for k in ("лисич", "lisichka", "asistent"))
 
     @staticmethod
     def _fg_title() -> str:

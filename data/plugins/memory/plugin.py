@@ -160,7 +160,7 @@ class PluginImpl(Plugin):
             '"facts":[{"category":"profile|preference|fact|relation|open_loop","key":"user.name","content":"...","importance":0.8}]}\n'
             "Правила: не выдумывай; facts — только устойчивое о пользователе/мире, не пересказ всего дня; "
             "если новых фактов нет — facts=[]. "
-            "diary на русском, от третьего лица.\n"
+            "diary на русском, от первого лица персонажа («я…»), 4–6 предложений.\n"
         )
         if old:
             prompt += f"\nУже записано про этот день (дополни/сожми, не потеряй важное):\n{old}\n"
@@ -174,7 +174,8 @@ class PluginImpl(Plugin):
             max_tokens=400,
         )
         data: Dict[str, Any] = {}
-        m = re.search(r"\{[\s\S]*\}", raw or "")
+        cleaned = re.sub(r"```(?:json)?", "", raw or "", flags=re.I).strip()
+        m = re.search(r"\{[\s\S]*\}", cleaned)
         if m:
             try:
                 parsed = json.loads(m.group(0))

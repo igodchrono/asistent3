@@ -129,16 +129,19 @@ class ChatEngine:
                 else getattr(self.app.config, "ACTIVE_CHARACTER", "")
             ),
             "nsfw": bool(st.get("character_nsfw")),
-            "emotion": str(st.get("emotion") or "neutral"),
+            "emotion": str(st.get("companion_mood") or st.get("emotion") or "neutral"),
             "mode": assistant_mode.get_mode(self.app),
         }
 
     def _context_block(self) -> str:
         c = self._ctx()
         lines = ["[CONTEXT]"]
-        for k, v in c.items():
-            if v not in ("", None, False):
+        for k in ("mode", "emotion", "imggen_stage", "last_search_query", "last_search_mode"):
+            v = c.get(k)
+            if v not in ("", None, False, "neutral"):
                 lines.append(f"{k}: {v}")
+        if len(lines) == 1:
+            return ""
         return "\n".join(lines)
 
     async def _classify(self, text: str) -> Dict[str, Any]:
@@ -450,6 +453,60 @@ class ChatEngine:
             self.history = self.history[-n:]
 
 
+    def _after_plugins(self, plugs, reply: str) -> str:
+        """Плагины видят [ANIM:] и только потом тег вырезается из пузыря."""
+        text = reply or ""
+        for pl in plugs:
+            try:
+                text = pl.on_after_llm(text, self.app) or text
+            except Exception as e:
+                print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
+        return self._strip_anim_for_chat(text)
+
+    async def _in_character_line(self, tool_text: str, intent: str) -> str:
+        """Короткая реплика персонажа поверх сырого результата инструмента."""
+        raw = (tool_text or "").strip()
+        if len(raw) < 12:
+            return raw
+        cid = (
+            self.app.get_active_character()
+            if hasattr(self.app, "get_active_character")
+            else getattr(self.app.config, "ACTIVE_CHARACTER", "default")
+        )
+        card = ""
+        try:
+            from character_catalog import read_character_card
+            card = (read_character_card(str(cid)) or "").strip()[:900]
+        except Exception:
+            card = ""
+        mood = str(self.app.state.get("companion_mood") or self.app.state.get("emotion") or "calm")
+        work = assistant_mode.is_work(self.app)
+        system = (
+            "Ты персонаж из карточки. Одной-двумя фразами своими словами скажи итог действия. "
+            "Не выдумывай фактов. Не копируй списки, пути и URL — они будут ниже отдельно. "
+            f"Настроение: {mood}. "
+            + ("Рабочий режим: без флирта. " if work else "")
+            + (f"\n\nКарточка:\n{card}" if card else "")
+        )
+        try:
+            line = await self.llm.chat_once(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"Действие: {intent}\nРезультат:\n{raw[:1400]}"},
+                ],
+                temperature=0.75,
+                max_tokens=80,
+            )
+        except Exception as e:
+            print(f"voice-over tool: {e}", flush=True)
+            return raw
+        line = (line or "").strip()
+        if not line:
+            return raw
+        if len(raw) > 160 or "\n" in raw or "http" in raw.lower() or ":\\" in raw or "/" in raw:
+            return f"{line}\n\n{raw}"
+        return line
+
     async def handle_user(self, text: str) -> AsyncIterator[str]:
         text = (text or "").strip()
         if not text:
@@ -494,12 +551,10 @@ class ChatEngine:
                 "pc_control": "pc_open",
             }.get(handled_by, "chat")
             self.app.state["last_intent"] = intent_from
-            reply = self._strip_anim_for_chat(handled_reply)
-            for pl in plugs:
-                try:
-                    reply = pl.on_after_llm(reply, self.app) or reply
-                except Exception as e:
-                    print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
+            reply = handled_reply or ""
+            if handled_by not in ("persona", "voice") and len(reply.strip()) > 24:
+                reply = await self._in_character_line(reply, intent_from)
+            reply = self._after_plugins(plugs, reply)
             self.history.append({"role": "assistant", "content": reply})
             self._remember("assistant", reply)
             self._trim_history()
@@ -566,12 +621,8 @@ class ChatEngine:
             result = await self._run_tool_async(intent, args)
             if result is not None:
                 reply = (speak + "\n" + result).strip() if speak else result
-                reply = self._strip_anim_for_chat(reply)
-                for pl in plugs:
-                    try:
-                        reply = pl.on_after_llm(reply, self.app) or reply
-                    except Exception as e:
-                        print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
+                reply = await self._in_character_line(reply, intent)
+                reply = self._after_plugins(plugs, reply)
                 self.history.append({"role": "assistant", "content": reply})
                 self._remember("assistant", reply)
                 self._trim_history()
@@ -595,25 +646,20 @@ class ChatEngine:
 
         if card:
             system = (
-                "Ты не общий ассистент. Ты ИГРАЕШЬ персонажа из карточки. "
-                "Речь, характер, желания, границы, обращение к пользователю — только из карточки. "
-                "Не ломай образ канцеляритом («чем могу помочь», «как ИИ»). "
-                "Длина ответа — как у персонажа, не «всегда коротко» и не «всегда длинно». "
-                "Стихи, списки и код — с настоящими переводами строк. "
-                "Код оформляй блоком markdown: ```язык затем код и закрывающие ```.\n\n"
-                f"--- персонаж: {cid} ---\n{card}\n"
+                "Ты персонаж из карточки, не общий ассистент. "
+                "Характер, обращение и границы — только из карточки. "
+                "Код — блоком markdown. Стихи — с переводами строк.\n\n"
+                f"--- {cid} ---\n{card[:6000]}\n"
             )
             extra_sys = (self.system_prompt or "").strip()
-            if extra_sys:
-                system += "\n--- служебное (не важнее карточки) ---\n" + extra_sys + "\n"
+            if extra_sys and len(extra_sys) < 500:
+                system += "\n" + extra_sys + "\n"
         else:
             system = self.system_prompt or "Ты живой ассистент."
-        system = (system or "") + "\n\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
-        system = system + "\n\n" + self._context_block()
-        system += (
-            "\nНе предлагай «найти похожее» без смысла. "
-            "Если пользователь хочет похожее — он скажет; система сама возьмёт контекст экрана."
-        )
+        system = (system or "") + "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
+        ctx = self._context_block()
+        if ctx:
+            system += "\n" + ctx
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
         tail = self._history_tail()
@@ -633,18 +679,17 @@ class ChatEngine:
                 extra.pop("max_tokens", None)
         if self.app.state.get("llm_temperature") is not None:
             extra["temperature"] = float(self.app.state["llm_temperature"])
+        elif assistant_mode.is_work(self.app):
+            extra["temperature"] = 0.4
+        else:
+            extra["temperature"] = max(0.72, float(getattr(self.llm, "temperature", 0.75) or 0.75))
 
         parts: List[str] = []
         model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
         async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
-        reply = self._strip_anim_for_chat("".join(parts))
-        for pl in plugs:
-            try:
-                reply = pl.on_after_llm(reply, self.app) or reply
-            except Exception as e:
-                print(f"[plugin {pl.id}] on_after_llm: {e}", flush=True)
+        reply = self._after_plugins(plugs, "".join(parts))
 
         if self.history and self.history[-1]["role"] == "assistant":
             self.history[-1]["content"] = reply
@@ -685,5 +730,11 @@ class ChatEngine:
         except Exception as e:
             print(f"proactive: {e}", flush=True)
             return ""
-        text = self._strip_anim_for_chat(raw or "")
-        return text
+        text = raw or ""
+        for pl in self._active_plugins():
+            try:
+                if hasattr(pl, "on_after_llm"):
+                    text = pl.on_after_llm(text, self.app) or text
+            except Exception as e:
+                print(f"proactive plugin {getattr(pl, 'id', '?')}: {e}", flush=True)
+        return self._strip_anim_for_chat(text)

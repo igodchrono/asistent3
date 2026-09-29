@@ -15,11 +15,9 @@ _WORK_PHRASES = (
     "давай по делу",
     "хватит флирта",
     "без пошлостей",
-    "по работе",
     "work mode",
     "давай работать",
     "рабочий тон",
-    "сейчас работа",
 )
 _COMP_PHRASES = (
     "режим лисы",
@@ -27,7 +25,6 @@ _COMP_PHRASES = (
     "режим компаньон",
     "можно пошло",
     "можно 18",
-    "расслабься",
     "не рабочий",
     "companion mode",
     "давай как обычно",
@@ -77,12 +74,20 @@ def set_mode(app: Any, mode: str) -> str:
 
 
 def detect_mode_switch(text: str) -> Optional[str]:
+    """Только явная команда в начале фразы, не «скинь файл по работе»."""
     low = (text or "").strip().lower().replace("ё", "е")
     if not low:
         return None
-    if any(p in low for p in _WORK_PHRASES):
+
+    def _hit(phrases: tuple) -> bool:
+        for p in phrases:
+            if low == p or low.startswith(p + " ") or low.startswith(p + ",") or low.startswith(p + ".") or low.startswith(p + "!"):
+                return True
+        return False
+
+    if _hit(_WORK_PHRASES):
         return WORK
-    if any(p in low for p in _COMP_PHRASES):
+    if _hit(_COMP_PHRASES):
         return COMPANION
     return None
 
