@@ -133,7 +133,13 @@ class PluginImpl(Plugin):
             stage = "idle"
 
         if stage == "drafting":
-            return None
+            return HookResult(True, "уже собираю один промпт, не пересобираю.")
+        if stage == "await_prompt":
+            if self._has_word(low, "отмена", "стоп") or "не надо" in low:
+                app.state["imggen_stage"] = "idle"
+                return HookResult(True, "ок, не рисую.")
+            self._begin_one(app, text)
+            return HookResult(True, "сцена есть. один промпт и сразу в генерацию.")
         if stage == "confirm":
             return self._handle_confirm(app, text, low)
         if stage == "busy":
@@ -143,13 +149,16 @@ class PluginImpl(Plugin):
             return None
 
         if any(k in low for k in _ASK):
-            refs = self._refs(app)
-            app.state["imggen_request"] = text
-            app.state["imggen_refs"] = refs
-            app.state["imggen_stage"] = "drafting"
-            app.state["imggen_at"] = time.time()
-            self._schedule_card(app, text, refs)
-            return HookResult(True, "собираю промпты через модель — напиши, как появятся: «давай qwen» / sdxl / z.")
+            scene = self._user_scene(text)
+            wf = self._pick_workflow_name(low)
+            if wf:
+                app.state["imggen_workflow_hint"] = wf
+            if len(scene) < 8:
+                app.state["imggen_stage"] = "await_prompt"
+                app.state["imggen_at"] = time.time()
+                return HookResult(True, "что рисуем? опиши сцену — соберу промпт один раз и сразу отправлю.")
+            self._begin_one(app, text)
+            return HookResult(True, "собираю промпт один раз и сразу отправляю на генерацию.")
         return None
 
     @staticmethod
@@ -159,6 +168,104 @@ class PluginImpl(Plugin):
             if re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", t, flags=re.I):
                 return True
         return False
+
+    def _begin_one(self, app, raw: str) -> None:
+        """Один промпт от модели и сразу очередь ComfyUI. Без второй сборки."""
+        low = (raw or "").lower()
+        refs = self._refs(app)
+        wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
+        if not wf:
+            wf = str(app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
+        app.state["imggen_request"] = raw
+        app.state["imggen_refs"] = refs
+        app.state["imggen_stage"] = "drafting"
+        app.state["imggen_at"] = time.time()
+        app.state["imggen_workflow_hint"] = ""
+        self._schedule_one(app, raw, refs, wf)
+
+    def _schedule_one(self, app, text, refs, wf: str):
+        async def run():
+            try:
+                prompt = await self._one_prompt(app, text, refs, wf)
+            except Exception as e:
+                print(f"imggen one prompt: {e}", flush=True)
+                prompt = ""
+            if app.state.get("imggen_stage") not in ("drafting", "confirm"):
+                return
+            if not prompt:
+                app.state["imggen_stage"] = "idle"
+                self._notify(app, "не получила промпт от модели. проверь LM Studio и повтори сцену.", None)
+                return
+            path = self._resolve_wf(wf)
+            fam = self._family(wf or path.stem)
+            key = {
+                "qwen": "imggen_prompt_qwen",
+                "qwen_edit": "imggen_prompt_qwen_edit",
+                "sdxl": "imggen_prompt_sdxl",
+                "z": "imggen_prompt_z",
+            }.get(fam, "imggen_prompt")
+            app.state[key] = prompt
+            app.state["imggen_prompt"] = prompt
+            if not path.exists() or self._is_stub_wf(path):
+                app.state["imggen_stage"] = "confirm"
+                self._notify(
+                    app,
+                    f"промпт один раз:\n«{prompt[:700]}»\n\nнет живого графа {path.name}. напиши «давай qwen».",
+                    None,
+                )
+                return
+            app.state["imggen_stage"] = "busy"
+            self._notify(app, f"промпт:\n«{prompt[:700]}»\n\nрисую через {path.stem}.", None)
+            self._start(app, prompt, path, list(refs or []))
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(run())
+                return
+        except Exception:
+            pass
+
+        def work():
+            asyncio.run(run())
+
+        threading.Thread(target=work, name="imggen-one", daemon=True).start()
+
+    async def _one_prompt(self, app, request: str, refs: list, wf: str) -> str:
+        fam = self._family(wf)
+        name, look = self._char_look(app)
+        about = self._about_character(request, name)
+        if about:
+            subject = f"Герой — персонаж «{name}». Внешность только из карточки:\n{look[:500]}"
+        else:
+            subject = (
+                f"Это НЕ портрет персонажа «{name}». "
+                "Не добавляй её имя, уши, хвост и рыжие волосы."
+            )
+        style = {
+            "qwen": "1–3 предложения, естественный язык, детальная сцена.",
+            "qwen_edit": "короткая инструкция правки кадра, что изменить и что сохранить.",
+            "sdxl": "английские теги через запятую, без предложений.",
+            "z": "короткое английское описание, одна-две фразы.",
+        }.get(fam, "один визуальный промпт.")
+        system = (
+            "Ты редактор одного промпта для картинки. "
+            "Верни только сам промпт, без JSON, без кавычек и без пояснений. "
+            + style
+        )
+        user = (
+            f"{subject}\n"
+            f"Модель: {fam}. Референс: {'да' if refs else 'нет'}.\n"
+            f"Запрос: {request}"
+        )
+        raw = (await self._llm_complete(app, system, user) or "").strip()
+        raw = raw.strip().strip("`").strip().strip('"').strip("«»")
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+        if raw.startswith("{") and raw.endswith("}"):
+            data = self._parse_prompt_json(raw)
+            raw = str(data.get(fam) or data.get("qwen") or data.get("sdxl") or data.get("z") or "").strip()
+        return raw[:1200]
 
     def _schedule_card(self, app, text, refs):
         async def run():
@@ -189,18 +296,11 @@ class PluginImpl(Plugin):
 
     def _handle_confirm(self, app, text, low):
         if self._has_word(low, "нет") or self._has_word(low, "не то", "отмена"):
-            if len(low) > 12 and not self._has_word(low, "нет"):
-                refs = list(app.state.get("imggen_refs") or [])
-                app.state["imggen_stage"] = "drafting"
-                self._schedule_card(app, text, refs)
-                return HookResult(True, "пересобираю промпт…")
             app.state["imggen_stage"] = "idle"
             return HookResult(True, "ок, без картинки. скажи заново, что нарисовать.")
         if any(w in low for w in ("другой промпт", "переделай промпт", "не подойд")):
-            refs = list(app.state.get("imggen_refs") or [])
-            app.state["imggen_stage"] = "drafting"
-            self._schedule_card(app, text, refs)
-            return HookResult(True, "пересобираю промпт…")
+            self._begin_one(app, text)
+            return HookResult(True, "пересобираю один раз и сразу рисую.")
         wf = self._pick_workflow_name(low)
         yes = self._has_word(low, "да", "давай", "ок", "го", "пойдёт", "пойдет", "норм", "утвержд", "сгенерируй")
         if wf or yes:
@@ -227,10 +327,17 @@ class PluginImpl(Plugin):
             if fam == "qwen_edit" and not refs:
                 app.state["imggen_stage"] = "confirm"
                 return HookResult(True, "для правки нужен референс. 📎 фото и снова «правка».")
+            if not prompt:
+                self._begin_one(app, str(app.state.get("imggen_request") or text))
+                return HookResult(True, "промпта ещё нет. собираю один раз и сразу рисую.")
             self._start(app, prompt, path, refs)
             extra = f", референс: {Path(refs[0]).name}" if refs else ""
-            return HookResult(True, f"запустила {path.stem}{extra}. это минуты, пиши пока — пришлю, как будет.")
-        return None
+            return HookResult(True, f"запустила {path.stem}{extra}. промпт уже готов, второй раз не собираю.")
+        scene = self._user_scene(text)
+        if len(scene) >= 8:
+            self._begin_one(app, text)
+            return HookResult(True, "новая сцена. один промпт и сразу в генерацию.")
+        return HookResult(True, "напиши «давай qwen» или опиши сцену заново.")
 
     def _ask_card(self, app, prompt: str, refs: List[str]) -> str:
         if app.state.get("imggen_prompt_qwen"):
@@ -683,24 +790,18 @@ class PluginImpl(Plugin):
         # intent imggen / imggen_edit — карточка промптов, не сразу в очередь
         if not run_now:
             if not prompt:
-                return "Нет описания сцены."
-            if not refs:
-                refs = self._refs(app)
+                app.state["imggen_stage"] = "await_prompt"
+                app.state["imggen_at"] = time.time()
+                return "что рисуем? опиши сцену."
+            scene = self._user_scene(prompt)
+            if len(scene) < 8:
+                app.state["imggen_stage"] = "await_prompt"
+                app.state["imggen_at"] = time.time()
+                return "что рисуем? опиши сцену — промпт соберу один раз."
             if edit:
-                last = app.state.get("phone_media_last")
-                if last and str(last) not in refs:
-                    refs = [str(last)] + refs
-                app.state["imggen_family"] = "qwen_edit"
-            app.state["imggen_request"] = prompt
-            app.state["imggen_refs"] = refs
-            app.state["imggen_stage"] = "drafting"
-            app.state["imggen_at"] = time.time()
-            if negative:
-                app.state["imggen_negative"] = negative
-            if size:
-                app.state["imggen_size"] = size
-            self._schedule_card(app, prompt, refs)
-            return "собираю промпты через модель — напиши, как появятся: «давай qwen» / sdxl / z / правка."
+                app.state["imggen_workflow_hint"] = "правка"
+            self._begin_one(app, prompt)
+            return "собираю промпт один раз и сразу отправляю на генерацию."
         refs = refs or []
         base = self._base(app)
         if not base:

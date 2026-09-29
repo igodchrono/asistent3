@@ -105,7 +105,12 @@ class PluginImpl(Plugin):
         if self.store is None:
             return
         try:
-            self.store.append_message(role, content)
+            cid = None
+            if self.app is not None:
+                raw = self.app.state.get("chat_id")
+                if raw is not None and str(raw).isdigit():
+                    cid = int(raw)
+            self.store.append_message(role, content, chat_id=cid)
         except Exception as e:
             print(f"memory record: {e}", flush=True)
 
@@ -113,7 +118,10 @@ class PluginImpl(Plugin):
         if self.store is None or engine is None:
             return []
         try:
-            rows = self.store.recent_messages(limit=self._tail_n())
+            cid = self.store.ensure_current_chat()
+            if self.app is not None:
+                self.app.state["chat_id"] = cid
+            rows = self.store.recent_messages(limit=self._tail_n(), chat_id=cid)
         except Exception as e:
             print(f"memory hydrate: {e}", flush=True)
             return []

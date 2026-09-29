@@ -459,7 +459,36 @@ class CharacterMemoryStore:
             """
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_time ON messages(created_at)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                created_at REAL,
+                updated_at REAL
+            )
+            """
+        )
+        cols = [str(r[1]) for r in self._conn.execute("PRAGMA table_info(messages)").fetchall()]
+        if "chat_id" not in cols:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN chat_id INTEGER")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, id)")
         self._conn.commit()
+        nchats = self._conn.execute("SELECT COUNT(*) AS c FROM chats").fetchone()
+        if int(nchats["c"] if nchats else 0) == 0:
+            now = time.time()
+            cur = self._conn.execute(
+                "INSERT INTO chats(title, created_at, updated_at) VALUES(?,?,?)",
+                ("Основной", now, now),
+            )
+            cid = int(cur.lastrowid)
+            self._conn.execute("UPDATE messages SET chat_id=? WHERE chat_id IS NULL", (cid,))
+            self._conn.execute(
+                "INSERT INTO meta(key, value) VALUES('current_chat_id', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(cid),),
+            )
+            self._conn.commit()
 
     @staticmethod
     def day_of(ts: Optional[float] = None) -> str:
@@ -477,24 +506,94 @@ class CharacterMemoryStore:
         )
         self._conn.commit()
 
-    def append_message(self, role: str, content: str) -> int:
+    def append_message(self, role: str, content: str, chat_id: Optional[int] = None) -> int:
         role = "assistant" if str(role) == "assistant" else "user"
         text = (content or "").strip()
         if not text:
             return -1
         if len(text) > 8000:
             text = text[:8000] + "…"
+        if chat_id is None:
+            chat_id = self.ensure_current_chat()
+        else:
+            chat_id = int(chat_id)
         last = self._conn.execute(
-            "SELECT id, role, content FROM messages ORDER BY id DESC LIMIT 1"
+            "SELECT id, role, content FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+            (chat_id,),
         ).fetchone()
         if last is not None and last["role"] == role and self._overlap(last["content"] or "", text) >= 0.92:
             return int(last["id"])
+        now = time.time()
         cur = self._conn.execute(
-            "INSERT INTO messages(role, content, created_at) VALUES(?,?,?)",
-            (role, text, time.time()),
+            "INSERT INTO messages(role, content, created_at, chat_id) VALUES(?,?,?,?)",
+            (role, text, now, chat_id),
+        )
+        row = self._conn.execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
+        title = str(row["title"]) if row else ""
+        if role == "user" and title == "Новый чат":
+            title = " ".join(text.split())[:32] or "Новый чат"
+        self._conn.execute(
+            "UPDATE chats SET updated_at=?, title=? WHERE id=?",
+            (now, title or "Чат", chat_id),
         )
         self._conn.commit()
         return int(cur.lastrowid)
+
+    def ensure_current_chat(self) -> int:
+        raw = self.get_meta("current_chat_id")
+        if str(raw).isdigit():
+            row = self._conn.execute("SELECT id FROM chats WHERE id=?", (int(raw),)).fetchone()
+            if row:
+                return int(row["id"])
+        row = self._conn.execute("SELECT id FROM chats ORDER BY updated_at DESC LIMIT 1").fetchone()
+        if row:
+            cid = int(row["id"])
+            self.set_meta("current_chat_id", str(cid))
+            return cid
+        return self.create_chat("Основной")
+
+    def list_chats(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT c.id, c.title, c.updated_at,
+                   (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n
+            FROM chats c
+            ORDER BY c.updated_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_chat(self, title: str = "Новый чат") -> int:
+        now = time.time()
+        cur = self._conn.execute(
+            "INSERT INTO chats(title, created_at, updated_at) VALUES(?,?,?)",
+            ((title or "Новый чат").strip() or "Новый чат", now, now),
+        )
+        cid = int(cur.lastrowid)
+        self.set_meta("current_chat_id", str(cid))
+        return cid
+
+    def delete_chat(self, chat_id: int) -> None:
+        cid = int(chat_id)
+        self._conn.execute("DELETE FROM messages WHERE chat_id=?", (cid,))
+        self._conn.execute("DELETE FROM chats WHERE id=?", (cid,))
+        self._conn.commit()
+        if self.get_meta("current_chat_id") == str(cid):
+            self.set_meta("current_chat_id", "")
+        self.ensure_current_chat()
+
+    def messages_for_chat(self, chat_id: int, limit: int = 80) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT id, role, content, created_at FROM messages
+            WHERE chat_id=?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (int(chat_id), max(1, int(limit))),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        out.reverse()
+        return out
 
     def message_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()
@@ -504,14 +603,24 @@ class CharacterMemoryStore:
         row = self._conn.execute("SELECT MAX(id) AS m FROM messages").fetchone()
         return int(row["m"] or 0)
 
-    def recent_messages(self, limit: int = 16) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            """
-            SELECT id, role, content, created_at FROM messages
-            ORDER BY id DESC LIMIT ?
-            """,
-            (max(1, int(limit)),),
-        ).fetchall()
+    def recent_messages(self, limit: int = 16, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        if chat_id is None:
+            rows = self._conn.execute(
+                """
+                SELECT id, role, content, created_at FROM messages
+                ORDER BY id DESC LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT id, role, content, created_at FROM messages
+                WHERE chat_id=?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (int(chat_id), max(1, int(limit))),
+            ).fetchall()
         out = [dict(r) for r in rows]
         out.reverse()
         return out

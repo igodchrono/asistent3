@@ -552,7 +552,7 @@ class ChatEngine:
             }.get(handled_by, "chat")
             self.app.state["last_intent"] = intent_from
             reply = handled_reply or ""
-            if handled_by not in ("persona", "voice") and len(reply.strip()) > 24:
+            if handled_by not in ("persona", "voice", "phone_media") and len(reply.strip()) > 24:
                 reply = await self._in_character_line(reply, intent_from)
             reply = self._after_plugins(plugs, reply)
             self.history.append({"role": "assistant", "content": reply})
@@ -621,7 +621,8 @@ class ChatEngine:
             result = await self._run_tool_async(intent, args)
             if result is not None:
                 reply = (speak + "\n" + result).strip() if speak else result
-                reply = await self._in_character_line(reply, intent)
+                if intent not in ("imggen", "imggen_edit", "generate_image"):
+                    reply = await self._in_character_line(reply, intent)
                 reply = self._after_plugins(plugs, reply)
                 self.history.append({"role": "assistant", "content": reply})
                 self._remember("assistant", reply)

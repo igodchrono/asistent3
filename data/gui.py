@@ -255,12 +255,22 @@ class ChatWindow(QtWidgets.QMainWindow):
         days_lay = QtWidgets.QVBoxLayout(days_wrap)
         days_lay.setContentsMargins(0, 0, 0, 0)
         days_lay.setSpacing(4)
-        days_lab = QtWidgets.QLabel("Диалоги")
+        days_lab = QtWidgets.QLabel("Чаты")
         days_lab.setStyleSheet("color:#888; font-size:11px;")
         days_lay.addWidget(days_lab)
+        chat_btns = QtWidgets.QHBoxLayout()
+        self.new_chat_btn = QtWidgets.QPushButton("＋ чат")
+        self.new_chat_btn.setToolTip("Новый чат. Факты и дневник не стираются.")
+        self.new_chat_btn.clicked.connect(self._new_chat)
+        self.del_chat_btn = QtWidgets.QPushButton("удалить")
+        self.del_chat_btn.setToolTip("Удалить этот чат. Память персонажа остаётся.")
+        self.del_chat_btn.clicked.connect(self._delete_chat)
+        chat_btns.addWidget(self.new_chat_btn)
+        chat_btns.addWidget(self.del_chat_btn)
+        days_lay.addLayout(chat_btns)
         self.days_list = QtWidgets.QListWidget()
         self.days_list.setMaximumWidth(168)
-        self.days_list.itemClicked.connect(self._on_day_clicked)
+        self.days_list.itemClicked.connect(self._on_chat_clicked)
         days_lay.addWidget(self.days_list, 1)
         split.addWidget(days_wrap)
 
@@ -513,55 +523,108 @@ class ChatWindow(QtWidgets.QMainWindow):
         self.refresh_mode_chrome()
         self._append_sys(f"Режим: {label(nxt)}")
 
-    def _refresh_days(self) -> None:
-        self.days_list.clear()
-        today = QtWidgets.QListWidgetItem("сегодня")
-        today.setData(QtCore.Qt.UserRole, "today")
-        self.days_list.addItem(today)
+    def _chat_store(self):
         mem = None
         try:
             mem = self.engine.app.plugins.get("memory")
         except Exception:
             mem = None
-        store = getattr(mem, "store", None) if mem else None
-        if store is None or not hasattr(store, "list_chat_days"):
+        return getattr(mem, "store", None) if mem else None
+
+    def _refresh_days(self) -> None:
+        self.days_list.clear()
+        store = self._chat_store()
+        if store is None or not hasattr(store, "list_chats"):
             return
         try:
-            days = store.list_chat_days(21) or []
+            current = int(store.ensure_current_chat())
+            self.engine.app.state["chat_id"] = current
+            rows = store.list_chats() or []
         except Exception as e:
-            print(f"days list: {e}", flush=True)
+            print(f"chats list: {e}", flush=True)
             return
-        for row in days:
-            day = str(row.get("day") or "")
+        for row in rows:
+            cid = int(row.get("id") or 0)
+            title = str(row.get("title") or "чат")
             n = int(row.get("n") or 0)
-            if not day:
-                continue
-            it = QtWidgets.QListWidgetItem(f"{day}  ({n})")
-            it.setData(QtCore.Qt.UserRole, day)
+            it = QtWidgets.QListWidgetItem(f"{title[:18]}  ({n})")
+            it.setData(QtCore.Qt.UserRole, cid)
             self.days_list.addItem(it)
+            if cid == current:
+                self.days_list.setCurrentItem(it)
+
+    def _on_chat_clicked(self, item) -> None:
+        if item is None:
+            return
+        cid = item.data(QtCore.Qt.UserRole)
+        if cid is None:
+            return
+        self._open_chat(int(cid))
+
+    def _open_chat(self, chat_id: int, note: str = "") -> None:
+        store = self._chat_store()
+        if store is None:
+            return
+        try:
+            store.set_meta("current_chat_id", str(int(chat_id)))
+            self.engine.app.state["chat_id"] = int(chat_id)
+            rows = store.messages_for_chat(int(chat_id), limit=80) or []
+        except Exception as e:
+            self._append_sys(f"Не открылся чат: {e}")
+            return
+        tail = rows[-40:]
+        self.engine.history = [
+            {"role": str(m.get("role") or "user"), "content": str(m.get("content") or "")}
+            for m in tail
+        ]
+        self.chat.clear()
+        self.show_dialog_resume(rows, note or "Чат")
+        self._refresh_days()
+
+    def _new_chat(self) -> None:
+        store = self._chat_store()
+        if store is None or not hasattr(store, "create_chat"):
+            self._append_sys("Память не загружена — чат не создать.")
+            return
+        try:
+            cid = store.create_chat("Новый чат")
+        except Exception as e:
+            self._append_sys(f"Не создался чат: {e}")
+            return
+        self.engine.app.state["chat_id"] = int(cid)
+        self.engine.history = []
+        self.chat.clear()
+        self._append_sys("Новый чат. Факты и дневник на месте.")
+        self._refresh_days()
+
+    def _delete_chat(self) -> None:
+        store = self._chat_store()
+        if store is None or not hasattr(store, "delete_chat"):
+            return
+        cid = self.engine.app.state.get("chat_id")
+        item = self.days_list.currentItem()
+        if item is not None and item.data(QtCore.Qt.UserRole) is not None:
+            cid = item.data(QtCore.Qt.UserRole)
+        if cid is None:
+            return
+        title = item.text() if item is not None else "этот чат"
+        ans = QtWidgets.QMessageBox.question(
+            self,
+            "Удалить чат",
+            f"Удалить «{title}»?\nСообщения этого чата пропадут. Факты и дневник останутся.",
+        )
+        if ans != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            store.delete_chat(int(cid))
+            nxt = store.ensure_current_chat()
+        except Exception as e:
+            self._append_sys(f"Не удалился чат: {e}")
+            return
+        self._open_chat(int(nxt), "Чат удалён. Память не трогала.")
 
     def _on_day_clicked(self, item) -> None:
-        key = item.data(QtCore.Qt.UserRole) if item is not None else None
-        if not key:
-            return
-        mem = self.engine.app.plugins.get("memory") if self.engine.app.plugins else None
-        store = getattr(mem, "store", None) if mem else None
-        if key == "today":
-            rows = []
-            if mem is not None and hasattr(mem, "hydrate_engine"):
-                rows = mem.hydrate_engine(self.engine) or []
-            self.chat.clear()
-            self.show_dialog_resume(rows, "Текущий диалог")
-            return
-        if store is None or not hasattr(store, "messages_for_day"):
-            return
-        try:
-            rows = store.messages_for_day(str(key)) or []
-        except Exception as e:
-            self._append_sys(f"Не открылся день: {e}")
-            return
-        self.chat.clear()
-        self.show_dialog_resume(rows, f"День {key}")
+        self._on_chat_clicked(item)
 
     def post(self, fn) -> None:
         try:
