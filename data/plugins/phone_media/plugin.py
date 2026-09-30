@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Генератор картинок: промпт → подтверждение → выбор workflow (qwen/sdxl/z) → ComfyUI.
+"""Генератор картинок: Qwen-Image 2.1. Текст → t2i, референс → edit.
 
-Референс: вложение 📎 или последнее изображение в чате (img2img, если в графе есть LoadImage).
+Промпт пишется один раз под выбранный граф и сразу уходит в ComfyUI.
 """
 from __future__ import annotations
 
@@ -29,29 +29,28 @@ _ASK = (
     "нарисуй мне", "draw ", "generate an image", "generate a picture", "create an image",
 )
 _ALIASES = {
-    "qwen": "workflows/qwen_image.json",
-    "кви": "workflows/qwen_image.json",
-    "qwen_image": "workflows/qwen_image.json",
-    "sdxl": "workflows/sdxl.json",
-    "sd": "workflows/sdxl.json",
-    "сдхл": "workflows/sdxl.json",
-    "сд": "workflows/sdxl.json",
-    "z": "workflows/z_image.json",
-    "zimage": "workflows/z_image.json",
-    "z-image": "workflows/z_image.json",
-    "з": "workflows/z_image.json",
-    "qwen_edit": "workflows/qwen_edit.json",
-    "квинедит": "workflows/qwen_edit.json",
-    "edit": "workflows/qwen_edit.json",
-    "правка": "workflows/qwen_edit.json",
+    "t2i": "workflows/qwen21_t2i.json",
+    "текст": "workflows/qwen21_t2i.json",
+    "qwen": "workflows/qwen21_t2i.json",
+    "qwen21": "workflows/qwen21_t2i.json",
+    "qwen_image": "workflows/qwen21_t2i.json",
+    "edit": "workflows/qwen21_edit.json",
+    "правка": "workflows/qwen21_edit.json",
+    "qwen_edit": "workflows/qwen21_edit.json",
+    "референс": "workflows/qwen21_edit.json",
 }
+_EDIT_WORDS = (
+    "правк", "измени", "переделай", "отредактир", "поправь", "замени",
+    "дорисуй", "перекрас", "референс", "по фото", "по этому фото",
+    "это фото", "это изображ", "<image",
+)
 
 
 class PluginImpl(Plugin):
     id = "phone_media"
     name = "Генератор картинок"
     version = "5.0.0"
-    description = "Промпт → ок? → qwen/sdxl/z → ComfyUI"
+    description = "Qwen-Image 2.1: текст или правка референса"
     settings_tab = "own"
     settings_tab_title = "Генератор"
     settings_schema = [
@@ -74,7 +73,7 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state.setdefault("imggen_stage", "idle")
-        print("🖼 imggen 5.0: prompt → confirm → workflow → ComfyUI", flush=True)
+        print("🖼 imggen 6.0: qwen-image 2.1 t2i / edit", flush=True)
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["generate_image"] = self.tool_generate
@@ -84,26 +83,29 @@ class PluginImpl(Plugin):
         lay = QtWidgets.QVBoxLayout(tab)
         en = QtWidgets.QCheckBox("Включить генератор")
         en.setChecked(bool(app.get_plugin_setting(self.id, "enabled", True)))
-        ask = QtWidgets.QCheckBox("Спрашивать Qwen / SDXL / Z каждый раз")
+        ask = QtWidgets.QCheckBox("Если приложено фото и неясно — спросить: текст или правка")
         ask.setChecked(bool(app.get_plugin_setting(self.id, "ask_workflow", True)))
         lay.addWidget(en)
         lay.addWidget(ask)
         url = QtWidgets.QLineEdit(str(app.get_plugin_setting(self.id, "comfy_url", "http://127.0.0.1:8188")))
-        pref = QtWidgets.QLineEdit(str(app.get_plugin_setting(self.id, "positive_prefix", "masterpiece, best quality, anime")))
+        pref = QtWidgets.QLineEdit(str(app.get_plugin_setting(self.id, "positive_prefix", "")))
         dflt = QtWidgets.QComboBox()
         dflt.setEditable(True)
-        for n in ("qwen", "sdxl", "z"):
+        for n in ("t2i", "edit"):
             dflt.addItem(n)
-        dflt.setEditText(str(app.get_plugin_setting(self.id, "default_workflow", "qwen")))
+        dflt.setEditText(str(app.get_plugin_setting(self.id, "default_workflow", "t2i")))
         tout = QtWidgets.QSpinBox(); tout.setRange(60, 900)
         tout.setValue(int(app.get_plugin_setting(self.id, "timeout_sec", 900) or 900))
         form = QtWidgets.QFormLayout()
         form.addRow("ComfyUI", url)
-        form.addRow("Префикс промпта", pref)
         form.addRow("По умолчанию", dflt)
         form.addRow("Ждать сек", tout)
         lay.addLayout(form)
-        lay.addWidget(QtWidgets.QLabel("Файлы в plugins/phone_media/workflows/:\nqwen_image.json, sdxl.json, z_image.json"))
+        lay.addWidget(QtWidgets.QLabel(
+            "Только два графа:\n"
+            "qwen21_t2i.json — картинка по тексту\n"
+            "qwen21_edit.json — правка прикреплённого фото"
+        ))
         self._ui = dict(enabled=en, ask_workflow=ask, comfy_url=url, positive_prefix=pref,
                         default_workflow=dflt, timeout_sec=tout)
         lay.addStretch(1)
@@ -116,7 +118,7 @@ class PluginImpl(Plugin):
             "ask_workflow": u["ask_workflow"].isChecked(),
             "comfy_url": u["comfy_url"].text().strip(),
             "positive_prefix": u["positive_prefix"].text().strip(),
-            "default_workflow": u["default_workflow"].currentText().strip() or "qwen",
+            "default_workflow": u["default_workflow"].currentText().strip() or "t2i",
             "timeout_sec": int(u["timeout_sec"].value()),
         }
 
@@ -140,11 +142,19 @@ class PluginImpl(Plugin):
                 return HookResult(True, "ок, не рисую.")
             paths = self._choices()
             picked = self._match_choice(low, paths)
-            if picked is None:
-                return HookResult(True, "не вижу такого графа.\n" + self._model_menu(paths))
+            if picked is None and low.strip() in ("1", "текст", "t2i", "новая"):
+                picked = self._resolve_wf("t2i")
+            if picked is None and any(k in low for k in ("2", "правка", "edit", "референс")):
+                picked = self._resolve_wf("edit")
+            if picked is None or not picked.exists():
+                return HookResult(True, "напиши 1 (только текст) или 2 (правка фото).")
             req = str(app.state.get("imggen_request") or text)
-            self._begin_one(app, req, wf=picked.stem)
-            return HookResult(True, f"беру {picked.stem}. один промпт и сразу в генерацию.")
+            fam = self._family(picked.stem)
+            if fam == "edit" and not (self._refs(app) or app.state.get("imggen_refs")):
+                return HookResult(True, "для правки сначала прикрепи фото.")
+            self._begin_one(app, req, wf="edit" if fam == "edit" else "t2i")
+            label = "правка" if fam == "edit" else "текст"
+            return HookResult(True, f"{label}. один промпт и сразу в генерацию.")
         if stage == "await_prompt":
             if self._has_word(low, "отмена", "стоп") or "не надо" in low:
                 app.state["imggen_stage"] = "idle"
@@ -168,7 +178,7 @@ class PluginImpl(Plugin):
                 app.state["imggen_at"] = time.time()
                 if wf:
                     app.state["imggen_workflow_hint"] = wf
-                return HookResult(True, "что рисуем? опиши сцену — потом спрошу, каким графом из workflows/.")
+                return HookResult(True, "что рисуем? опиши сцену. фото нужно только если это правка.")
             return HookResult(True, self._after_scene(app, text))
         return None
 
@@ -186,9 +196,7 @@ class PluginImpl(Plugin):
         refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
         if not wf:
             wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
-        if not wf:
-            paths = self._choices()
-            wf = paths[0].stem if paths else "qwen"
+        wf = "edit" if self._family(wf) == "edit" else "t2i"
         app.state["imggen_request"] = raw
         app.state["imggen_refs"] = refs
         app.state["imggen_stage"] = "drafting"
@@ -248,27 +256,43 @@ class PluginImpl(Plugin):
                 return p
         return None
 
+    def _wants_edit(self, low: str) -> bool:
+        return any(k in (low or "") for k in _EDIT_WORDS)
+
+    def _wants_fresh(self, low: str) -> bool:
+        return any(k in (low or "") for k in ("с нуля", "новую картин", "по тексту", "без референс", "без фото"))
+
     def _after_scene(self, app, raw: str) -> str:
-        paths = self._choices()
-        if not paths:
-            app.state["imggen_stage"] = "idle"
-            return "в workflows/ нет живых графов ComfyUI."
+        low = (raw or "").lower()
+        refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+        edit = self._wants_edit(low) or str(app.state.get("imggen_workflow_hint") or "") in ("edit", "правка", "qwen_edit")
+        fresh = self._wants_fresh(low)
+        named = self._pick_workflow_name(low)
+        if named:
+            edit = self._family(named) == "edit"
+            fresh = not edit
         ask = bool(app.get_plugin_setting(self.id, "ask_workflow", True))
-        picked = self._match_choice((raw or "").lower(), paths)
-        hint = str(app.state.get("imggen_workflow_hint") or "")
-        if picked is None and hint:
-            picked = self._match_choice(hint, paths)
-        if picked is None and ask and len(paths) > 1:
+        if refs and ask and not edit and not fresh and not named:
             app.state["imggen_stage"] = "await_model"
             app.state["imggen_request"] = raw
-            app.state["imggen_refs"] = self._refs(app)
+            app.state["imggen_refs"] = refs
             app.state["imggen_at"] = time.time()
-            return self._model_menu(paths)
-        if picked is None:
-            picked = self._default_path(paths)
-        self._begin_one(app, raw, wf=picked.stem if picked else "")
-        name = picked.stem if picked else "граф"
-        return f"беру {name}. один промпт и сразу рисую."
+            return (
+                "фото есть. что делаем?\n"
+                "1. новая картинка только по тексту\n"
+                "2. правка этого фото"
+            )
+        if edit and not refs:
+            app.state["imggen_stage"] = "await_prompt"
+            app.state["imggen_workflow_hint"] = "edit"
+            app.state["imggen_request"] = raw
+            app.state["imggen_at"] = time.time()
+            return "для правки прикрепи фото и напиши, что изменить."
+        wf = "edit" if edit else "t2i"
+        self._begin_one(app, raw, wf=wf)
+        if edit:
+            return "правка референса. один промпт-инструкция и сразу в Qwen-Image 2.1."
+        return "картинка по тексту. один промпт под Qwen-Image 2.1 и сразу рисую."
 
     def _schedule_one(self, app, text, refs, wf: str):
         async def run():
@@ -285,29 +309,19 @@ class PluginImpl(Plugin):
                 return
             path = self._resolve_wf(wf)
             fam = self._family(wf or path.stem)
-            key = {
-                "qwen": "imggen_prompt_qwen",
-                "qwen_edit": "imggen_prompt_qwen_edit",
-                "sdxl": "imggen_prompt_sdxl",
-                "z": "imggen_prompt_z",
-            }.get(fam, "imggen_prompt")
-            app.state[key] = prompt
             app.state["imggen_prompt"] = prompt
+            app.state["imggen_prompt_" + fam] = prompt
             if not path.exists() or self._is_stub_wf(path):
                 app.state["imggen_stage"] = "confirm"
-                self._notify(
-                    app,
-                    f"промпт один раз:\n«{prompt[:700]}»\n\nнет живого графа {path.name}. напиши «давай qwen».",
-                    None,
-                )
+                self._notify(app, f"промпт есть, но нет графа {path.name}.", None)
+                return
+            if fam == "edit" and not refs:
+                app.state["imggen_stage"] = "confirm"
+                self._notify(app, "для правки нужен референс. прикрепи фото и напиши, что изменить.", None)
                 return
             app.state["imggen_stage"] = "busy"
-            fam = self._family(wf or path.stem)
-            if fam == "qwen_edit" and not refs:
-                app.state["imggen_stage"] = "confirm"
-                self._notify(app, "для правки нужен референс. прикрепи фото и снова выбери qwen_edit.", None)
-                return
-            self._notify(app, f"промпт:\n«{prompt[:700]}»\n\nрисую через {path.stem}.", None)
+            title = "правка референса" if fam == "edit" else "картинка по тексту"
+            self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nрисую Qwen-Image 2.1.", None)
             self._start(app, prompt, path, list(refs or []))
 
         try:
@@ -327,27 +341,44 @@ class PluginImpl(Plugin):
         fam = self._family(wf)
         name, look = self._char_look(app)
         about = self._about_character(request, name)
-        if about:
-            subject = f"Герой — персонаж «{name}». Внешность только из карточки:\n{look[:500]}"
-        else:
-            subject = (
-                f"Это НЕ портрет персонажа «{name}». "
-                "Не добавляй её имя, уши, хвост и рыжие волосы."
+        if fam == "edit":
+            system = (
+                "Ты пишешь одну инструкцию правки для Qwen-Image-2.1 Edit. "
+                "Английский язык. Это не описание новой картинки с нуля. "
+                "Скажи, что изменить, и что оставить. Исходное фото называй <image1>. "
+                "Позу, лицо, одежду и композицию сохраняй, если пользователь прямо не просит их менять. "
+                "Не добавляй masterpiece, 8k, best quality. "
+                "Верни только инструкцию, без кавычек и пояснений."
             )
-        style = {
-            "qwen": "1–3 предложения, естественный язык, детальная сцена.",
-            "qwen_edit": "короткая инструкция правки кадра, что изменить и что сохранить.",
-            "sdxl": "английские теги через запятую, без предложений.",
-            "z": "короткое английское описание, одна-две фразы.",
-        }.get(fam, "один визуальный промпт.")
-        system = (
-            "Ты редактор одного промпта для картинки. "
-            "Верни только сам промпт, без JSON, без кавычек и без пояснений. "
-            + style
-        )
+            subject = "Меняй только то, что просит пользователь. Не подменяй человека на другого персонажа."
+            if about:
+                subject = (
+                    f"На фото может быть персонаж «{name}». Не переписывай внешность, "
+                    f"если об этом не просят. Карточка только как ориентир:\n{look[:400]}"
+                )
+        else:
+            system = (
+                "Ты пишешь один английский абзац для Qwen-Image-2.1 text-to-image. "
+                "Опиши готовый кадр так, будто смотришь на него: кто, поза, одежда, место, "
+                "свет, материалы, композиция. Настоящее время, без приказов вроде make sure. "
+                "Не пиши masterpiece, 8k, highly detailed, award-winning и размер в пикселях. "
+                "Если пользователь хочет читаемый текст на картинке, вставь его точно, "
+                "в исходной письменности, в двойных кавычках. "
+                "Верни только абзац, без JSON и без пояснений."
+            )
+            if about:
+                subject = (
+                    f"Герой кадра — персонаж «{name}». Внешность только из карточки, не выдумывай другую:\n"
+                    f"{look[:500]}"
+                )
+            else:
+                subject = (
+                    f"Это не портрет персонажа «{name}». "
+                    "Не добавляй её имя, лисьи уши, хвост и рыжие волосы."
+                )
         user = (
             f"{subject}\n"
-            f"Модель: {fam}. Референс: {'да' if refs else 'нет'}.\n"
+            f"Референс: {'да, граф edit' if fam == 'edit' else 'нет, граф только по тексту'}.\n"
             f"Запрос: {request}"
         )
         raw = (await self._llm_complete(app, system, user) or "").strip()
@@ -356,8 +387,9 @@ class PluginImpl(Plugin):
             raw = raw[4:].strip()
         if raw.startswith("{") and raw.endswith("}"):
             data = self._parse_prompt_json(raw)
-            raw = str(data.get(fam) or data.get("qwen") or data.get("sdxl") or data.get("z") or "").strip()
-        return raw[:1200]
+            raw = str(data.get(fam) or data.get("rewritten_prompt") or data.get("prompt") or "").strip()
+        limit = 700 if fam == "edit" else 2200
+        return raw[:limit]
 
     def _schedule_card(self, app, text, refs):
         async def run():
@@ -401,7 +433,7 @@ class PluginImpl(Plugin):
                 wf = str(app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
             path = self._resolve_wf(wf)
             if not path.exists():
-                return HookResult(True, f"нет файла {path.name}. Положи API-json в workflows/ и повтори имя (qwen/sdxl/z).")
+                return HookResult(True, f"нет файла {path.name}. Нужны qwen21_t2i.json или qwen21_edit.json.")
             if self._is_stub_wf(path):
                 return HookResult(True,
                     f"{path.name} — заглушка, не граф ComfyUI. "
@@ -409,17 +441,11 @@ class PluginImpl(Plugin):
                     "Пока можно «давай qwen» — там живой qwen_image.json.")
             app.state["imggen_stage"] = "busy"
             fam = self._family(wf or path.stem)
-            key = {
-                "qwen": "imggen_prompt_qwen",
-                "qwen_edit": "imggen_prompt_qwen_edit",
-                "sdxl": "imggen_prompt_sdxl",
-                "z": "imggen_prompt_z",
-            }.get(fam, "imggen_prompt")
-            prompt = str(app.state.get(key) or app.state.get("imggen_prompt") or "")
             refs = list(app.state.get("imggen_refs") or [])
-            if fam == "qwen_edit" and not refs:
+            if fam == "edit" and not refs:
                 app.state["imggen_stage"] = "confirm"
-                return HookResult(True, "для правки нужен референс. 📎 фото и снова «правка».")
+                return HookResult(True, "для правки нужен референс. прикрепи фото и снова напиши, что изменить.")
+            prompt = str(app.state.get("imggen_prompt_" + fam) or app.state.get("imggen_prompt") or "")
             if not prompt:
                 self._begin_one(app, str(app.state.get("imggen_request") or text))
                 return HookResult(True, "промпта ещё нет. собираю один раз и сразу рисую.")
@@ -492,15 +518,9 @@ class PluginImpl(Plugin):
 
     def _family(self, name: str) -> str:
         n = (name or "").lower()
-        if "edit" in n or "правк" in n:
-            return "qwen_edit"
-        if "qwen" in n or "кви" in n:
-            return "qwen"
-        if "sdxl" in n or n in ("sd", "сд", "сдхл"):
-            return "sdxl"
-        if n in ("z", "zimage", "z-image", "з") or "z_image" in n:
-            return "z"
-        return "qwen"
+        if any(k in n for k in ("edit", "правк", "референс")):
+            return "edit"
+        return "t2i"
 
 
     def _about_character(self, request: str, name: str = "") -> bool:
@@ -545,7 +565,7 @@ class PluginImpl(Plugin):
         llm = getattr(app, "llm", None)
         if llm is not None and hasattr(llm, "chat_once"):
             try:
-                out = await llm.chat_once(msgs, temperature=0.35, max_tokens=800)
+                out = await llm.chat_once(msgs, temperature=0.4, max_tokens=1400)
                 if out:
                     return str(out)
             except Exception as e:
@@ -815,22 +835,34 @@ class PluginImpl(Plugin):
                 continue
             ct = node.get("class_type") or ""
             inp = node.setdefault("inputs", {})
+            title = ((node.get("_meta") or {}).get("title") or "").lower()
+            if ct == "PrimitiveStringMultiline" and self._is_prompt_slot(title):
+                inp["value"] = prompt
             if ct in ("CLIPTextEncode", "TextEncodeQwenImageEdit", "TextEncodeQwenImageEditPlus"):
-                meta = ((node.get("_meta") or {}).get("title") or "").lower()
                 field = "prompt" if "prompt" in inp else "text"
                 cur = str(inp.get(field) or "")
-                is_neg = "negative" in meta or "色调" in cur
-                is_pos = (not is_neg) and ("positive" in meta or "PROMPT" in cur)
-                if is_pos:
+                is_neg = "negative" in title
+                is_pos = (not is_neg) and ("positive" in title or cur.strip() == "PROMPT")
+                if is_pos and not isinstance(inp.get(field), list):
                     inp[field] = prompt
             if ct in ("EmptyLatentImage", "EmptySD3LatentImage"):
-                inp["width"] = w
-                inp["height"] = h
+                if not isinstance(inp.get("width"), list):
+                    inp["width"] = w
+                if not isinstance(inp.get("height"), list):
+                    inp["height"] = h
             if ct == "KSampler":
                 inp["seed"] = seed
+            if ct == "RandomNoise":
+                inp["noise_seed"] = seed
             if ct == "LoadImage" and uploaded:
                 inp["image"] = uploaded
         return graph
+
+    @staticmethod
+    def _is_prompt_slot(title: str) -> bool:
+        if any(k in title for k in ("system", "rewrit", "эксперт", "pe ")):
+            return False
+        return any(k in title for k in ("prompt", "промпт", "изменить"))
 
     def _upload(self, app, path: Path) -> Optional[str]:
         try:
