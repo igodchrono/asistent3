@@ -227,7 +227,7 @@ class PluginImpl(Plugin):
             if shown and family_of(shown) == fam:
                 return
         locked = time.time() < self._pose_lock_until
-        if locked and source in ("screen", "companion_mood", "auto_message", "web_search"):
+        if locked and source in ("screen", "companion_mood", "auto_message", "web_search", "chat"):
             return
         app.state["emotion"] = fam
         app.state["emotion_source"] = source
@@ -261,11 +261,17 @@ class PluginImpl(Plugin):
         if hit:
             self._pose_lock_until = time.time() + 90
             if app.get_plugin_setting(self.id, "show_avatar", True):
-                self.apply_emotion(hit)
+                self.apply_emotion(hit, exact=True)
             shown = str(app.state.get("emotion_animation") or hit)
             app.state["persona_pose_request"] = shown
             app.state["emotion"] = family_of(shown)
             app.state["emotion_source"] = "user_pose"
+            return None
+        fam = self._text_family(low)
+        if fam and time.time() >= self._pose_lock_until:
+            app.state["chat_emotion"] = fam
+            app.state["emotion_source"] = "user_text"
+            self.apply_emotion(fam)
         return None
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
@@ -274,15 +280,11 @@ class PluginImpl(Plugin):
         if not app.get_plugin_setting(self.id, "inject_mood", True):
             return messages
         mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
-        anim = str(app.state.get("emotion_animation") or mood)
-        fams = group_families(self._live_names())
-        shown = [k for k, v in sorted(fams.items()) if v][:18]
-        compact = ", ".join(f"{k}({len(fams[k])})" for k in shown) or "idle"
         pose = str(app.state.get("persona_pose_request") or "")
-        pose_line = f" Пользователь просит позу «{family_of(pose)}» — поставь [ANIM:{family_of(pose)}]." if pose else ""
+        pose_line = f" Пользователь просит позу «{family_of(pose)}»." if pose else ""
         block = (
-            f"\n\n[НАСТРОЕНИЕ] {mood}, кадр {anim}. Семьи: {compact}.{pose_line}\n"
-            "В конце ответа один [ANIM:семья]. Не залипай на idle. Поза по просьбе важнее болтовни.\n"
+            f"\n\n[НАСТРОЕНИЕ] сейчас {mood}.{pose_line}\n"
+            "Лицо уже выставлено по тексту. Не перечисляй эмоции и не ставь [ANIM], если тон тот же.\n"
         )
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = str(messages[0].get("content") or "") + block
@@ -291,34 +293,35 @@ class PluginImpl(Plugin):
     def on_after_llm(self, reply: str, app: AppContext) -> str:
         if not app.get_plugin_setting(self.id, "enabled", True):
             return reply
-        tags = _ANIM_RE.findall(reply or "")
-        name = tags[-1].lower().strip() if tags else ""
-        if name:
-            fam = family_of(name)
-            app.state["emotion_animation"] = name
-            app.state["emotion"] = fam
-            app.state["companion_mood"] = fam
-            app.state["companion_mood_at"] = time.time()
-            print(f"persona [ANIM:] → {name}", flush=True)
+        if time.time() < self._pose_lock_until:
+            return _ANIM_RE.sub("", reply or "").strip("\n")
         pose = str(app.state.get("persona_pose_request") or "")
-        if not name:
-            if pose:
-                name = pose
-            elif time.time() < self._pose_lock_until:
-                name = str(app.state.get("emotion_animation") or "")
-            else:
-                name = self._reply_family(reply, app)
-                app.state["emotion_source"] = "chat"
         app.state["persona_pose_request"] = ""
-        shown = str(app.state.get("emotion_animation") or "")
-        if name and app.get_plugin_setting(self.id, "react_to_reply", True):
-            if not pose and shown and family_of(name) == family_of(shown) and time.time() >= self._pose_lock_until:
-                name = ""
-            if name:
-                exact = bool(pose) or time.time() < self._pose_lock_until
-                self.apply_emotion(name, exact=exact)
-        cleaned = _ANIM_RE.sub("", reply or "")
-        return cleaned.strip("\n")
+        if pose:
+            self.apply_emotion(pose, exact=True)
+            return _ANIM_RE.sub("", reply or "").strip("\n")
+        user = str(app.state.get("last_user_text") or "")
+        want = self._text_family(user) or self._text_family(reply or "")
+        tag = ""
+        tags = _ANIM_RE.findall(reply or "")
+        if tags:
+            tag = family_of(tags[-1])
+        if not want and tag:
+            want = tag
+        if not want:
+            last = float(app.state.get("last_user_activity") or 0)
+            if not last or time.time() - last > 45:
+                scr = str(app.state.get("screen_react_emotion") or "")
+                if scr and scr not in ("neutral", "idle"):
+                    want = scr
+        if want and app.get_plugin_setting(self.id, "react_to_reply", True):
+            app.state["chat_emotion"] = want
+            app.state["emotion_source"] = "chat"
+            app.state["companion_mood"] = family_of(want)
+            app.state["companion_mood_at"] = time.time()
+            print(f"persona chat → {want}", flush=True)
+            self.apply_emotion(want)
+        return _ANIM_RE.sub("", reply or "").strip("\n")
 
     def apply_emotion(self, emotion: str, exact: bool = False) -> None:
         if self.app is None:
@@ -336,6 +339,9 @@ class PluginImpl(Plugin):
         except Exception:
             pass
         raw = str(emotion or "idle").lower().strip()
+        shown = str(self.app.state.get("emotion_animation") or "")
+        if not exact and shown and family_of(shown) == family_of(raw):
+            return
         names = set(self._live_names())
         if exact and raw in names and raw not in self._forbidden:
             name = raw
@@ -408,31 +414,22 @@ class PluginImpl(Plugin):
             names = set(self.win.animation_names())
         if raw in self._forbidden:
             raw = self._forbid_fallback
-        mood = str((self.app.state.get("companion_mood") if self.app else "") or "")
-        # точное имя, если есть
         if raw in names and raw not in self._forbidden:
-            # всё равно взять вариант семьи, чтобы не залипать на одном PNG
-            pool = self._family_pool(family_of(raw), names, mood)
-            picked = self._pick_unused(pool or [raw])
-            if picked:
-                return picked
             return raw
-        pool = self._family_pool(raw, names, mood)
+        pool = self._family_pool(raw, names, "")
         if not pool:
-            pool = self._family_pool(_FALLBACK.get(raw, raw), names, mood)
+            pool = self._family_pool(_FALLBACK.get(raw, raw), names, "")
         if not pool:
-            # любой кадр семьи по префиксу/суффиксу
             for alt in list(names):
                 if alt.startswith(family_of(raw) + "_") or alt.endswith("_" + family_of(raw)):
                     if alt not in self._forbidden:
                         pool.append(alt)
-        picked = self._pick_unused(pool)
-        if picked:
-            return picked
+        if pool:
+            return sorted(pool)[0]
         for c in (self._forbid_fallback, "idle", "neutral", "happy"):
             if c in names:
                 return c
-        return next(iter(names), "")
+        return next(iter(sorted(names)), "")
 
     def _match_pose(self, low: str) -> str:
         for item in self._keywords:
@@ -449,25 +446,28 @@ class PluginImpl(Plugin):
                 return anim
         return ""
 
-    def _reply_family(self, reply: str, app: AppContext) -> str:
-        """Кадр из смысла реплики, не из очереди всех спрайтов."""
-        low = (reply or "").lower()
+    def _text_family(self, text: str) -> str:
+        """Пустая строка, если в тексте нет явного тона."""
+        low = (text or "").lower()
+        if not low.strip():
+            return ""
         rules = (
-            (("хаха", "хихи", "ахах", "смеш"), "giggling"),
-            (("груст", "жалко", "обид", "плач"), "cry"),
-            (("злюсь", "бесит", "раздраж"), "angry"),
-            (("люблю", "скучаю", "обним", "целу"), "love"),
-            (("нашл", "ищу", "ссылк", "глянь"), "searching"),
-            (("рисую", "промпт", "кадр готов"), "pointing"),
-            (("сонн", "устал", "пора спать"), "sleepy"),
+            (("хаха", "хихи", "ахах", "смеш", "лол"), "giggling"),
+            (("груст", "жалко", "обид", "плач", "плохо мне"), "cry"),
+            (("злюсь", "бесит", "раздраж", "ненавиж"), "angry"),
+            (("люблю", "скучаю", "обним", "целу", "родн"), "love"),
+            (("нарисуй", "сгенери", "промпт"), "pointing"),
+            (("найди", "поищи", "что на экране", "глянь"), "searching"),
+            (("сонн", "устал", "спать"), "sleepy"),
             (("смущ", "стесня"), "shy"),
+            (("привет", "доброе утро", "добрый вечер", "как ты"), "happy"),
         )
         for keys, fam in rules:
             if any(k in low for k in keys):
                 return fam
-        if low.count("?") >= 1 and len(low) < 280:
+        if "?" in low and len(low) < 400:
             return "thinking"
-        return str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
+        return ""
 
     def _situation_family(self, app: AppContext) -> str:
         last = float(app.state.get("last_user_activity") or 0)

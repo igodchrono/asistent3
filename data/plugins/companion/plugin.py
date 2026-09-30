@@ -110,15 +110,15 @@ class PluginImpl(Plugin):
         # лёгкий сдвиг настроения от тона
         low = (text or "").lower()
         if any(w in low for w in ("спасибо", "молодец", "любим", "рада", "класс", "умница", "милая")):
-            self._set_mood(app, "happy", 0.8)
+            self._set_mood(app, "happy", 0.8, sprite=True, source="chat")
         elif any(w in low for w in ("дур", "туп", "бесит", "заткни", "достал")):
-            self._set_mood(app, "annoyed", 0.7)
+            self._set_mood(app, "annoyed", 0.7, sprite=True, source="chat")
         elif any(w in low for w in ("скуч", "груст", "плохо", "устал")):
-            self._set_mood(app, "sad", 0.55)
+            self._set_mood(app, "sad", 0.55, sprite=True, source="chat")
         elif any(w in low for w in ("хаха", "ахах", "смешн", "прикол", "танцуй", "потанцуй")):
-            self._set_mood(app, "playful", 0.8)
+            self._set_mood(app, "playful", 0.8, sprite=True, source="chat")
         elif any(w in low for w in ("спокойн", "просто поговор", "обними")):
-            self._set_mood(app, "calm", 0.55)
+            self._set_mood(app, "calm", 0.55, sprite=True, source="chat")
         elif any(w in low for w in ("секс", "голая", "18+", "пошл", "хочу тебя", "раздень")):
             try:
                 from core.mode import is_work
@@ -126,7 +126,7 @@ class PluginImpl(Plugin):
             except Exception:
                 work = False
             if app.state.get("character_nsfw") and not work:
-                self._set_mood(app, "flirty", 0.85)
+                self._set_mood(app, "flirty", 0.85, sprite=True, source="chat")
         return None
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
@@ -143,27 +143,6 @@ class PluginImpl(Plugin):
         return messages
 
     def on_after_llm(self, reply: str, app: AppContext) -> str:
-        # подтянуть mood из [ANIM:] если есть
-        import re
-        m = re.search(r"\[ANIM:([a-zA-Z0-9_]+)\]", reply or "")
-        if m:
-            anim = m.group(1).lower().split("_")[0]
-            map_anim = {
-                "happy": "happy", "smile": "happy", "laugh": "happy", "giggling": "happy",
-                "dance": "playful", "playful": "playful", "mischievous": "playful",
-                "sad": "sad", "cry": "sad",
-                "angry": "annoyed", "annoyed": "annoyed", "pouting": "annoyed",
-                "flirty": "flirty", "love": "flirty", "lust": "flirty", "blush": "flirty",
-                "seductive": "flirty", "lingerie": "flirty", "undress": "flirty",
-                "teasing": "playful", "sly": "playful",
-                "thinking": "curious", "searching": "curious", "pointing": "curious",
-                "shy": "shy", "embarrassed": "shy",
-                "sleepy": "sleepy", "tired": "sleepy",
-                "proud": "proud", "confident": "proud",
-                "jealous": "annoyed",
-            }
-            if anim in map_anim:
-                self._set_mood(app, map_anim[anim], None)
         return reply
 
     # ---------- time / mood / profile block ----------
@@ -201,16 +180,18 @@ class PluginImpl(Plugin):
         app.state["companion_mood_at"] = time.time()
         app.state["emotion"] = mood
 
-    def _set_mood(self, app: AppContext, mood: str, energy: Optional[float]) -> None:
+    def _set_mood(self, app: AppContext, mood: str, energy: Optional[float], sprite: bool = False, source: str = "screen") -> None:
         app.state["companion_mood"] = mood
         app.state["emotion"] = mood
         if energy is not None:
             app.state["companion_mood_energy"] = float(energy)
         app.state["companion_mood_at"] = time.time()
+        if not sprite:
+            return
         persona = app.plugins.get("persona") or app.state.get("emotion_plugin")
         if persona is not None and hasattr(persona, "set_context"):
             try:
-                persona.set_context(app, mood, "companion_mood")
+                persona.set_context(app, mood, source)
             except Exception as e:
                 print(f"companion: mood sprite {e}", flush=True)
 
@@ -333,13 +314,17 @@ class PluginImpl(Plugin):
         except Exception:
             pass
         if scene == "nsfw":
-            self._set_mood(app, "flirty" if nsfw_ok else "curious", 0.8 if nsfw_ok else 0.6)
+            self._set_mood(app, "flirty" if nsfw_ok else "curious", 0.8 if nsfw_ok else 0.6, sprite=True, source="screen")
         elif scene == "coding":
-            self._set_mood(app, "curious", 0.65)
+            self._set_mood(app, "thinking", 0.65, sprite=True, source="screen")
         elif scene == "movie":
-            self._set_mood(app, "calm", 0.55)
+            self._set_mood(app, "calm", 0.55, sprite=True, source="screen")
         elif scene == "writing":
-            self._set_mood(app, "curious", 0.6)
+            self._set_mood(app, "thinking", 0.6, sprite=True, source="screen")
+        elif scene == "chat":
+            self._set_mood(app, "happy", 0.6, sprite=True, source="screen")
+        elif scene == "browsing":
+            self._set_mood(app, "searching", 0.55, sprite=True, source="screen")
 
     def _dbg(self, app: AppContext, msg: str) -> None:
         if app.get_plugin_setting(self.id, "debug_log", True):
