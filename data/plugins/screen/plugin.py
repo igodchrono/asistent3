@@ -89,10 +89,13 @@ class PluginImpl(Plugin):
         title = self._fg_title()
         if not title or self._own_title(title):
             return
+        prev = str(app.state.get("screen_react_title") or "")
+        if title == prev and app.state.get("screen_react_emotion"):
+            return
         app.state["screen_react_title"] = title
         app.state["screen_react_context"] = title
         emo, anim, conf = self._infer(app, title)
-        if conf < 0.5:
+        if conf < 0.55:
             return
         app.state["screen_react_emotion"] = emo
         print(f"screen: {emo}/{anim} conf={conf:.2f} ← {title[:70]!r}", flush=True)
@@ -103,7 +106,7 @@ class PluginImpl(Plugin):
         )
         if persona and hasattr(persona, "set_context"):
             try:
-                persona.set_context(app, emo, "screen")
+                persona.set_context(app, anim or emo, "screen")
             except Exception:
                 pass
 
@@ -116,15 +119,25 @@ class PluginImpl(Plugin):
         except Exception:
             nsfw_allowed = bool(app.state.get("character_nsfw"))
         low = text.lower()
-        if any(w in low for w in ("nsfw", "hentai", "18+", "xxx", "porno", "секс")):
-            if not nsfw_allowed:
-                return "shy", "shy", 0.75
-            return "flirty", "flirty", 0.85
-        if any(w in low for w in ("chrome", "google", "поиск", "search")):
-            return "searching", "thinking", 0.7
-        if any(w in low for w in ("code", "cmd", "visual studio", "pycharm")):
-            return "thinking", "thinking", 0.7
-        return "neutral", "idle", 0.4
+        rules = (
+            (("porno", "porn", "hentai", "xxx", "xvideos", "xnxx", "nhentai", "rule34", "nsfw"), "flirty", 0.9),
+            (("youtube", "netflix", "twitch", "vlc", "potplayer", "фильм", "сериал", "kinopoisk"), "calm", 0.75),
+            (("spotify", "музыка", "youtube music", "яндекс музыка"), "happy", 0.7),
+            (("telegram", "discord", "whatsapp", "slack", "vk.com", "вконтакте"), "happy", 0.72),
+            (("visual studio", "vscode", "pycharm", "cursor", "powershell", "terminal", "stackoverflow", "github"), "thinking", 0.8),
+            (("word", "excel", "notepad", "блокнот", "obsidian", "notion", "google docs"), "thinking", 0.7),
+            (("steam", "game", "игра", "minecraft"), "playful", 0.7),
+            (("error", "exception", "traceback", "ошибк"), "surprised", 0.8),
+            (("chrome", "firefox", "edge", "opera", "brave", "google", "поиск", "search"), "searching", 0.66),
+        )
+        for keys, emo, conf in rules:
+            if any(w in low for w in keys):
+                if emo == "flirty" and not nsfw_allowed:
+                    return "shy", "shy", 0.75
+                return emo, emo, conf
+        if low.strip():
+            return "curious", "thinking", 0.58
+        return "neutral", "idle", 0.3
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
         title = str(app.state.get("screen_react_title") or "")

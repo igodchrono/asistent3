@@ -219,29 +219,32 @@ class PluginImpl(Plugin):
     def set_context(self, app: AppContext, emotion: str, source: str = "") -> None:
         raw = str(emotion or "idle").lower().strip()
         fam = family_of(raw)
+        shown = str(app.state.get("emotion_animation") or "")
+        if source == "screen":
+            last_chat = float(app.state.get("last_user_activity") or 0)
+            if last_chat and time.time() - last_chat < 45:
+                return
+            if shown and family_of(shown) == fam:
+                return
+        locked = time.time() < self._pose_lock_until
+        if locked and source in ("screen", "companion_mood", "auto_message", "web_search"):
+            return
         app.state["emotion"] = fam
-        app.state["emotion_animation"] = raw
         app.state["emotion_source"] = source
         if source in ("companion_mood", "user", "chat"):
             app.state["companion_mood"] = fam
             app.state["companion_mood_at"] = time.time()
         elif source in ("screen", "auto_message", "web_search"):
-            last = float(app.state.get("companion_mood_at") or 0)
-            cur = str(app.state.get("companion_mood") or "")
-            if (time.time() - last > 90) or cur in ("", "idle", "neutral", "calm", "curious"):
-                mapped = {
-                    "searching": "curious",
-                    "thinking": "curious",
-                    "neutral": "calm",
-                    "idle": "calm",
-                }.get(fam, fam)
-                app.state["companion_mood"] = mapped
-                app.state["companion_mood_at"] = time.time()
-        locked = time.time() < self._pose_lock_until
-        if locked and source in ("screen", "companion_mood", "auto_message", "web_search"):
-            return
+            mapped = {
+                "searching": "curious",
+                "thinking": "curious",
+                "neutral": "calm",
+                "idle": "calm",
+            }.get(fam, fam)
+            app.state["companion_mood"] = mapped
+            app.state["companion_mood_at"] = time.time()
         if app.get_plugin_setting(self.id, "show_avatar", True):
-            self.apply_emotion(raw)
+            self.apply_emotion(raw, exact=False)
 
     def set_animation(self, name: str, app=None) -> None:
         self.apply_emotion(name)
@@ -304,11 +307,16 @@ class PluginImpl(Plugin):
             elif time.time() < self._pose_lock_until:
                 name = str(app.state.get("emotion_animation") or "")
             else:
-                name = self._auto_frame(app)
+                name = self._reply_family(reply, app)
+                app.state["emotion_source"] = "chat"
         app.state["persona_pose_request"] = ""
+        shown = str(app.state.get("emotion_animation") or "")
         if name and app.get_plugin_setting(self.id, "react_to_reply", True):
-            exact = bool(pose) or time.time() < self._pose_lock_until
-            self.apply_emotion(name, exact=exact)
+            if not pose and shown and family_of(name) == family_of(shown) and time.time() >= self._pose_lock_until:
+                name = ""
+            if name:
+                exact = bool(pose) or time.time() < self._pose_lock_until
+                self.apply_emotion(name, exact=exact)
         cleaned = _ANIM_RE.sub("", reply or "")
         return cleaned.strip("\n")
 
@@ -441,29 +449,40 @@ class PluginImpl(Plugin):
                 return anim
         return ""
 
+    def _reply_family(self, reply: str, app: AppContext) -> str:
+        """Кадр из смысла реплики, не из очереди всех спрайтов."""
+        low = (reply or "").lower()
+        rules = (
+            (("хаха", "хихи", "ахах", "смеш"), "giggling"),
+            (("груст", "жалко", "обид", "плач"), "cry"),
+            (("злюсь", "бесит", "раздраж"), "angry"),
+            (("люблю", "скучаю", "обним", "целу"), "love"),
+            (("нашл", "ищу", "ссылк", "глянь"), "searching"),
+            (("рисую", "промпт", "кадр готов"), "pointing"),
+            (("сонн", "устал", "пора спать"), "sleepy"),
+            (("смущ", "стесня"), "shy"),
+        )
+        for keys, fam in rules:
+            if any(k in low for k in keys):
+                return fam
+        if low.count("?") >= 1 and len(low) < 280:
+            return "thinking"
+        return str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
+
+    def _situation_family(self, app: AppContext) -> str:
+        last = float(app.state.get("last_user_activity") or 0)
+        if last and time.time() - last < 50:
+            return str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
+        scr = str(app.state.get("screen_react_emotion") or "")
+        if scr and scr not in ("neutral", "idle"):
+            return scr
+        return str(app.state.get("companion_mood") or "calm")
+
     def _auto_frame(self, app: AppContext) -> str:
         intent = str(app.state.get("last_intent") or "")
-        names = set(self._live_names())
-        mood = str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
-        if intent in _INTENT_ANIM:
+        if intent in _INTENT_ANIM and float(app.state.get("last_user_activity") or 0) and time.time() - float(app.state.get("last_user_activity") or 0) < 50:
             return self._resolve(_INTENT_ANIM[intent])
-        families = list(_MOOD_FAMILIES.get(mood, (mood, "idle")))
-        if not self._nsfw_ok():
-            families = [f for f in families if f not in _NSFW_FAMILIES]
-        pool: List[str] = []
-        for fam in families:
-            pool.extend(self._family_pool(fam, names, mood))
-        # 15% — любой ещё не показанный кадр, чтобы со временем пройти все 111
-        unused_all = [n for n in names if n not in self._recent]
-        if unused_all and random.random() < 0.18:
-            extra = unused_all
-            if not self._nsfw_ok():
-                extra = [n for n in extra if family_of(n) not in _NSFW_FAMILIES]
-            if extra:
-                pool.extend(extra)
-        pool = list(dict.fromkeys(pool))
-        picked = self._pick_unused(pool)
-        return picked or "idle"
+        return self._resolve(self._situation_family(app))
 
     def _cycle_next(self, app: AppContext) -> str:
         names = self._live_names()
@@ -505,12 +524,14 @@ class PluginImpl(Plugin):
             return
         # не дёргать, если пользователь только что писал (кадр сменит on_after_llm)
         last = float(app.state.get("last_user_activity") or 0)
-        if last and time.time() - last < 8:
+        if last and time.time() - last < 20:
             return
-        name = self._auto_frame(app)
-        if name:
-            print(f"persona live → {name}", flush=True)
-            self.apply_emotion(name)
+        want = family_of(self._situation_family(app))
+        shown = family_of(str(app.state.get("emotion_animation") or ""))
+        if shown == want:
+            return
+        print(f"persona live {shown} → {want}", flush=True)
+        self.apply_emotion(want)
 
     def _ensure_window(self) -> None:
         if AvatarWindow is None:

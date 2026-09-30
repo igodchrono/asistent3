@@ -134,12 +134,22 @@ class PluginImpl(Plugin):
 
         if stage == "drafting":
             return HookResult(True, "уже собираю один промпт, не пересобираю.")
+        if stage == "await_model":
+            if self._has_word(low, "отмена", "стоп") or "не надо" in low:
+                app.state["imggen_stage"] = "idle"
+                return HookResult(True, "ок, не рисую.")
+            paths = self._choices()
+            picked = self._match_choice(low, paths)
+            if picked is None:
+                return HookResult(True, "не вижу такого графа.\n" + self._model_menu(paths))
+            req = str(app.state.get("imggen_request") or text)
+            self._begin_one(app, req, wf=picked.stem)
+            return HookResult(True, f"беру {picked.stem}. один промпт и сразу в генерацию.")
         if stage == "await_prompt":
             if self._has_word(low, "отмена", "стоп") or "не надо" in low:
                 app.state["imggen_stage"] = "idle"
                 return HookResult(True, "ок, не рисую.")
-            self._begin_one(app, text)
-            return HookResult(True, "сцена есть. один промпт и сразу в генерацию.")
+            return HookResult(True, self._after_scene(app, text))
         if stage == "confirm":
             return self._handle_confirm(app, text, low)
         if stage == "busy":
@@ -156,9 +166,10 @@ class PluginImpl(Plugin):
             if len(scene) < 8:
                 app.state["imggen_stage"] = "await_prompt"
                 app.state["imggen_at"] = time.time()
-                return HookResult(True, "что рисуем? опиши сцену — соберу промпт один раз и сразу отправлю.")
-            self._begin_one(app, text)
-            return HookResult(True, "собираю промпт один раз и сразу отправляю на генерацию.")
+                if wf:
+                    app.state["imggen_workflow_hint"] = wf
+                return HookResult(True, "что рисуем? опиши сцену — потом спрошу, каким графом из workflows/.")
+            return HookResult(True, self._after_scene(app, text))
         return None
 
     @staticmethod
@@ -169,19 +180,95 @@ class PluginImpl(Plugin):
                 return True
         return False
 
-    def _begin_one(self, app, raw: str) -> None:
+    def _begin_one(self, app, raw: str, wf: str = "") -> None:
         """Один промпт от модели и сразу очередь ComfyUI. Без второй сборки."""
         low = (raw or "").lower()
-        refs = self._refs(app)
-        wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
+        refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
         if not wf:
-            wf = str(app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
+            wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
+        if not wf:
+            paths = self._choices()
+            wf = paths[0].stem if paths else "qwen"
         app.state["imggen_request"] = raw
         app.state["imggen_refs"] = refs
         app.state["imggen_stage"] = "drafting"
         app.state["imggen_at"] = time.time()
         app.state["imggen_workflow_hint"] = ""
+        app.state["imggen_last_wf"] = wf
         self._schedule_one(app, raw, refs, wf)
+
+    def _choices(self) -> List[Path]:
+        folder = Path(__file__).resolve().parent / "workflows"
+        out: List[Path] = []
+        if not folder.is_dir():
+            return out
+        for p in sorted(folder.glob("*.json")):
+            try:
+                if self._is_stub_wf(p):
+                    continue
+            except Exception:
+                continue
+            out.append(p)
+        return out
+
+    def _default_path(self, paths: List[Path]) -> Optional[Path]:
+        if not paths:
+            return None
+        want = str(self.app.get_plugin_setting(self.id, "default_workflow", "") or "").strip().lower() if self.app else ""
+        for p in paths:
+            if want and want in (p.stem.lower(), self._family(p.stem)):
+                return p
+        return paths[0]
+
+    def _model_menu(self, paths: List[Path]) -> str:
+        if not paths:
+            return "в папке workflows/ нет живых графов."
+        lines = ["Каким графом рисовать? Напиши номер или имя файла:"]
+        for i, p in enumerate(paths, 1):
+            lines.append(f"{i}. {p.stem}")
+        return "\n".join(lines)
+
+    def _match_choice(self, low: str, paths: List[Path]) -> Optional[Path]:
+        text = (low or "").strip().lower()
+        if not text or not paths:
+            return None
+        m = re.match(r"^(\d+)\b", text)
+        if m:
+            i = int(m.group(1))
+            if 1 <= i <= len(paths):
+                return paths[i - 1]
+        named = self._pick_workflow_name(text)
+        if named:
+            resolved = self._resolve_wf(named)
+            if resolved.exists() and not self._is_stub_wf(resolved):
+                return resolved
+        for p in paths:
+            stem = p.stem.lower()
+            if stem == text or stem in text or stem.replace("_", " ") in text:
+                return p
+        return None
+
+    def _after_scene(self, app, raw: str) -> str:
+        paths = self._choices()
+        if not paths:
+            app.state["imggen_stage"] = "idle"
+            return "в workflows/ нет живых графов ComfyUI."
+        ask = bool(app.get_plugin_setting(self.id, "ask_workflow", True))
+        picked = self._match_choice((raw or "").lower(), paths)
+        hint = str(app.state.get("imggen_workflow_hint") or "")
+        if picked is None and hint:
+            picked = self._match_choice(hint, paths)
+        if picked is None and ask and len(paths) > 1:
+            app.state["imggen_stage"] = "await_model"
+            app.state["imggen_request"] = raw
+            app.state["imggen_refs"] = self._refs(app)
+            app.state["imggen_at"] = time.time()
+            return self._model_menu(paths)
+        if picked is None:
+            picked = self._default_path(paths)
+        self._begin_one(app, raw, wf=picked.stem if picked else "")
+        name = picked.stem if picked else "граф"
+        return f"беру {name}. один промпт и сразу рисую."
 
     def _schedule_one(self, app, text, refs, wf: str):
         async def run():
@@ -299,8 +386,9 @@ class PluginImpl(Plugin):
             app.state["imggen_stage"] = "idle"
             return HookResult(True, "ок, без картинки. скажи заново, что нарисовать.")
         if any(w in low for w in ("другой промпт", "переделай промпт", "не подойд")):
-            self._begin_one(app, text)
-            return HookResult(True, "пересобираю один раз и сразу рисую.")
+            prev = str(app.state.get("imggen_last_wf") or "")
+            self._begin_one(app, text, wf=prev)
+            return HookResult(True, f"тот же граф ({prev or 'по умолчанию'}), промпт один раз.")
         wf = self._pick_workflow_name(low)
         yes = self._has_word(low, "да", "давай", "ок", "го", "пойдёт", "пойдет", "норм", "утвержд", "сгенерируй")
         if wf or yes:
@@ -335,9 +423,9 @@ class PluginImpl(Plugin):
             return HookResult(True, f"запустила {path.stem}{extra}. промпт уже готов, второй раз не собираю.")
         scene = self._user_scene(text)
         if len(scene) >= 8:
-            self._begin_one(app, text)
-            return HookResult(True, "новая сцена. один промпт и сразу в генерацию.")
-        return HookResult(True, "напиши «давай qwen» или опиши сцену заново.")
+            return HookResult(True, self._after_scene(app, text))
+        paths = self._choices()
+        return HookResult(True, self._model_menu(paths) if paths else "напиши имя графа из workflows/.")
 
     def _ask_card(self, app, prompt: str, refs: List[str]) -> str:
         if app.state.get("imggen_prompt_qwen"):
@@ -800,8 +888,7 @@ class PluginImpl(Plugin):
                 return "что рисуем? опиши сцену — промпт соберу один раз."
             if edit:
                 app.state["imggen_workflow_hint"] = "правка"
-            self._begin_one(app, prompt)
-            return "собираю промпт один раз и сразу отправляю на генерацию."
+            return self._after_scene(app, prompt)
         refs = refs or []
         base = self._base(app)
         if not base:
