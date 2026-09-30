@@ -10,10 +10,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.plugin_api import AppContext, Plugin, SettingField
+from core.plugin_api import AppContext, HookResult, Plugin, SettingField
 
-_TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".yml", ".xml", ".html", ".css", ".js"}
+_FENCE = re.compile(r"```([a-zA-Z0-9_+-]*)\r?\n(.*?)```", re.S)
+_SAVE_PHRASES = (
+    "скинь файлом", "дай файлом", "выдай файлом", "отправь файлом", "в виде файла",
+    "сохрани в файл", "сохрани как файл", "сохрани файл", "сохрани это", "сохрани код",
+    "сохрани воркфлоу", "создай файл", "создать файл", "собери файл", "сделай файл",
+    "запиши в файл", "положи в файл", "создай воркфлоу", "собери воркфлоу",
+    "сделай воркфлоу", "сохрани json",
+)
 _DOC_EXT = {".docx", ".pdf"}
+_TEXT_EXT = {".txt", ".md", ".json", ".csv", ".log", ".py", ".ini", ".yaml", ".yml", ".xml", ".html", ".css", ".js"}
 _OK_EXT = _TEXT_EXT | _DOC_EXT
 
 
@@ -26,6 +34,107 @@ class PluginImpl(Plugin):
         SettingField("enabled", "Включить", "bool", True),
         SettingField("max_chars", "Макс. символов на правку", "int", 20000, min_value=1000, max_value=80000),
     ]
+
+    def on_user_message(self, text, app):
+        if not app.get_plugin_setting(self.id, "enabled", True):
+            return None
+        if not self._wants_saved_file(text or ""):
+            return None
+        name = self._name_from_request(text)
+        blocks = self._history_blocks(app)
+        body, lang = self._pick_block(blocks, name)
+        if not body:
+            body = self._assemble(app, text)
+            lang = ""
+        if not body:
+            return HookResult(True, "не из чего собрать файл: в чате нет кода, и модель ничего не вернула.")
+        if not name:
+            name = self._name_for(lang, text)
+        saved = self.tool_send(app, name=name, content=body)
+        return HookResult(True, saved)
+
+    @staticmethod
+    def _wants_saved_file(text: str) -> bool:
+        low = (text or "").lower()
+        if any(w in low for w in ("картин", "фото", "изображен")) and not any(
+            w in low for w in ("файл", "воркфлоу", "код", "json")
+        ):
+            return False
+        if any(p in low for p in _SAVE_PHRASES):
+            return True
+        return bool(re.search(r"сохрани\s+\S+\.[a-z0-9]{1,8}", low))
+
+    @staticmethod
+    def _name_from_request(text: str) -> str:
+        m = re.search(r"([A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,8})", text or "")
+        return m.group(1) if m else ""
+
+    def _history_blocks(self, app: AppContext):
+        gui = getattr(app, "window", None) or app.state.get("gui")
+        engine = getattr(gui, "engine", None) if gui is not None else None
+        history = list(getattr(engine, "history", []) or [])
+        found = []
+        for msg in history[:-1]:
+            if not isinstance(msg, dict):
+                continue
+            for lang, body in _FENCE.findall(str(msg.get("content") or "")):
+                body = body.strip("\n")
+                if body.strip():
+                    found.append((lang.lower(), body))
+        return found
+
+    @staticmethod
+    def _pick_block(blocks, name: str):
+        if not blocks:
+            return "", ""
+        ext = Path(name).suffix.lower().lstrip(".") if name else ""
+        aliases = {"py": "python", "js": "javascript", "md": "markdown", "sh": "bash"}
+        want = {ext, aliases.get(ext, "")} - {""}
+        if want:
+            for lang, body in reversed(blocks):
+                if lang in want:
+                    return body, lang
+        lang, body = max(blocks, key=lambda item: len(item[1]))
+        return body, lang
+
+    def _name_for(self, lang: str, text: str) -> str:
+        low = (text or "").lower()
+        ext = {
+            "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
+            "json": ".json", "html": ".html", "css": ".css", "markdown": ".md",
+        }.get(lang or "", "")
+        if not ext:
+            if "json" in low or "воркфлоу" in low or "workflow" in low:
+                ext = ".json"
+            elif "python" in low or ".py" in low:
+                ext = ".py"
+            else:
+                ext = ".txt"
+        stem = "workflow" if ext == ".json" else "note"
+        return stem + ext
+
+    def _assemble(self, app: AppContext, request: str) -> str:
+        gui = getattr(app, "window", None) or app.state.get("gui")
+        engine = getattr(gui, "engine", None) if gui is not None else None
+        history = list(getattr(engine, "history", []) or [])
+        lines = []
+        for msg in history[-12:]:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role") or "user"
+            body = str(msg.get("content") or "").strip()
+            if body:
+                lines.append(f"{role}: {body[:1500]}")
+        transcript = "\n".join(lines)[-7000:]
+        raw = self._llm_rewrite(
+            app,
+            "Собери один готовый файл по просьбе и контексту. Верни только содержимое файла.",
+            f"Просьба:\n{request}\n\nЧат:\n{transcript}",
+        )
+        m = _FENCE.search(raw or "")
+        if m:
+            raw = m.group(2)
+        return (raw or "").strip()
 
     def on_load(self, app: AppContext) -> None:
         app.state.setdefault("uploads", [])

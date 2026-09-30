@@ -302,6 +302,11 @@ class PluginImpl(Plugin):
                 )
                 return
             app.state["imggen_stage"] = "busy"
+            fam = self._family(wf or path.stem)
+            if fam == "qwen_edit" and not refs:
+                app.state["imggen_stage"] = "confirm"
+                self._notify(app, "для правки нужен референс. прикрепи фото и снова выбери qwen_edit.", None)
+                return
             self._notify(app, f"промпт:\n«{prompt[:700]}»\n\nрисую через {path.stem}.", None)
             self._start(app, prompt, path, list(refs or []))
 
@@ -802,7 +807,6 @@ class PluginImpl(Plugin):
         seed = random.randint(1, 2**31 - 1)
         w = int(app.get_plugin_setting(self.id, "width", 1088) or 1088)
         h = int(app.get_plugin_setting(self.id, "height", 1808) or 1808)
-        steps = int(app.get_plugin_setting(self.id, "steps", 8) or 8)
         uploaded = None
         if refs:
             uploaded = self._upload(app, Path(refs[0]))
@@ -811,22 +815,19 @@ class PluginImpl(Plugin):
                 continue
             ct = node.get("class_type") or ""
             inp = node.setdefault("inputs", {})
-            if ct == "CLIPTextEncode":
+            if ct in ("CLIPTextEncode", "TextEncodeQwenImageEdit", "TextEncodeQwenImageEditPlus"):
                 meta = ((node.get("_meta") or {}).get("title") or "").lower()
-                cur = str(inp.get("text") or "")
-                is_pos = "positive" in meta or "PROMPT" in cur or nid == "4"
-                is_neg = nid == "2" or "色调" in cur or ("negative" in meta)
+                field = "prompt" if "prompt" in inp else "text"
+                cur = str(inp.get(field) or "")
+                is_neg = "negative" in meta or "色调" in cur
+                is_pos = (not is_neg) and ("positive" in meta or "PROMPT" in cur)
                 if is_pos:
-                    inp["text"] = prompt
+                    inp[field] = prompt
             if ct in ("EmptyLatentImage", "EmptySD3LatentImage"):
                 inp["width"] = w
                 inp["height"] = h
             if ct == "KSampler":
                 inp["seed"] = seed
-                inp["steps"] = steps
-                if uploaded and refs:
-                    # if latent comes from VAEEncode, don't force denoise 1
-                    pass
             if ct == "LoadImage" and uploaded:
                 inp["image"] = uploaded
         return graph
