@@ -134,7 +134,7 @@ class PluginImpl(Plugin):
             app.state["imggen_stage"] = "idle"
             stage = "idle"
 
-        if stage == "drafting":
+        if stage == "drafting" and age < 25:
             return HookResult(True, "уже собираю один промпт, не пересобираю.")
         if stage == "await_model":
             if self._has_word(low, "отмена", "стоп") or "не надо" in low:
@@ -160,13 +160,18 @@ class PluginImpl(Plugin):
                 app.state["imggen_stage"] = "idle"
                 return HookResult(True, "ок, не рисую.")
             return HookResult(True, self._after_scene(app, text))
-        if stage == "confirm":
+        if stage == "confirm" and not (self._is_prompt_revise(low) and self._has_recent_gen(app)):
             return self._handle_confirm(app, text, low)
         if stage == "busy":
             if self._has_word(low, "отмена", "стоп") or "стоп генерац" in low or "не надо картин" in low:
                 app.state["imggen_stage"] = "idle"
+                app.state["imggen_job"] = 0
                 return HookResult(True, "ок, не жду эту картинку. можно просить новую.")
-            return None
+            if not self._is_prompt_revise(low) and not any(k in low for k in _ASK):
+                return None
+
+        if self._is_prompt_revise(low) and self._has_recent_gen(app):
+            return HookResult(True, self._revise(app, text))
 
         if any(k in low for k in _ASK):
             scene = self._user_scene(text)
@@ -197,13 +202,15 @@ class PluginImpl(Plugin):
         if not wf:
             wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
         wf = "edit" if self._family(wf) == "edit" else "t2i"
+        job = time.time()
         app.state["imggen_request"] = raw
         app.state["imggen_refs"] = refs
         app.state["imggen_stage"] = "drafting"
         app.state["imggen_at"] = time.time()
         app.state["imggen_workflow_hint"] = ""
         app.state["imggen_last_wf"] = wf
-        self._schedule_one(app, raw, refs, wf)
+        app.state["imggen_job"] = job
+        self._schedule_one(app, raw, refs, wf, job)
 
     def _choices(self) -> List[Path]:
         folder = Path(__file__).resolve().parent / "workflows"
@@ -257,7 +264,50 @@ class PluginImpl(Plugin):
         return None
 
     def _wants_edit(self, low: str) -> bool:
-        return any(k in (low or "") for k in _EDIT_WORDS)
+        low = low or ""
+        if any(k in low for k in ("промпт", "промт")):
+            return False
+        return any(k in low for k in _EDIT_WORDS)
+
+    def _is_prompt_revise(self, low: str) -> bool:
+        if any(w in low for w in ("напоминан", "заметк", "календар", "задач", "список", "файл")):
+            return False
+        if any(k in low for k in ("промпт", "промт")) and any(
+            w in low for w in ("измени", "поправь", "перепиши", "добавь", "убери", "другой", "переделай")
+        ):
+            return True
+        return any(w in low for w in (
+            "добавь", "убери", "заново", "ещё раз", "еще раз", "перегенерир",
+            "другой вариант", "тот же", "потемнее", "посветлее", "крупнее",
+        ))
+
+    def _has_recent_gen(self, app) -> bool:
+        if not (app.state.get("imggen_last_prompt") or app.state.get("imggen_request")):
+            return False
+        last = float(app.state.get("imggen_done_at") or app.state.get("imggen_at") or 0)
+        return bool(last) and time.time() - last < 1800
+
+    def _revise(self, app, text: str) -> str:
+        prev = str(app.state.get("imggen_last_prompt") or "")
+        base = str(app.state.get("imggen_request") or "")
+        low = (text or "").lower()
+        wf = str(app.state.get("imggen_last_wf") or "t2i")
+        if any(k in low for k in ("промпт", "промт")) or not self._wants_edit(low):
+            wf = "t2i" if wf != "edit" or any(k in low for k in ("промпт", "промт")) else wf
+        if any(k in low for k in ("промпт", "промт")):
+            wf = "t2i"
+        refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+        if wf == "edit" and not refs:
+            wf = "t2i"
+        merged = (
+            "Это правка уже отправленного промпта. Верни один цельный новый промпт, не ответ в чат.\n"
+            f"Прошлый запрос: {base[:500]}\n"
+            f"Прошлый промпт:\n{prev[:1800]}\n"
+            f"Что изменить: {text}"
+        )
+        self._begin_one(app, merged, wf=wf)
+        app.state["imggen_request"] = (text or "").strip()
+        return "обновляю промпт и сразу отправляю в ComfyUI."
 
     def _wants_fresh(self, low: str) -> bool:
         return any(k in (low or "") for k in ("с нуля", "новую картин", "по тексту", "без референс", "без фото"))
@@ -294,13 +344,15 @@ class PluginImpl(Plugin):
             return "правка референса. один промпт-инструкция и сразу в Qwen-Image 2.1."
         return "картинка по тексту. один промпт под Qwen-Image 2.1 и сразу рисую."
 
-    def _schedule_one(self, app, text, refs, wf: str):
+    def _schedule_one(self, app, text, refs, wf: str, job: float = 0):
         async def run():
             try:
                 prompt = await self._one_prompt(app, text, refs, wf)
             except Exception as e:
                 print(f"imggen one prompt: {e}", flush=True)
                 prompt = ""
+            if job and app.state.get("imggen_job") != job:
+                return
             if app.state.get("imggen_stage") not in ("drafting", "confirm"):
                 return
             if not prompt:
@@ -310,19 +362,21 @@ class PluginImpl(Plugin):
             path = self._resolve_wf(wf)
             fam = self._family(wf or path.stem)
             app.state["imggen_prompt"] = prompt
+            app.state["imggen_last_prompt"] = prompt
             app.state["imggen_prompt_" + fam] = prompt
+            app.state["imggen_last_wf"] = fam
             if not path.exists() or self._is_stub_wf(path):
                 app.state["imggen_stage"] = "confirm"
                 self._notify(app, f"промпт есть, но нет графа {path.name}.", None)
                 return
             if fam == "edit" and not refs:
-                app.state["imggen_stage"] = "confirm"
-                self._notify(app, "для правки нужен референс. прикрепи фото и напиши, что изменить.", None)
-                return
+                fam = "t2i"
+                path = self._resolve_wf("t2i")
+                app.state["imggen_last_wf"] = fam
             app.state["imggen_stage"] = "busy"
             title = "правка референса" if fam == "edit" else "картинка по тексту"
-            self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nрисую Qwen-Image 2.1.", None)
-            self._start(app, prompt, path, list(refs or []))
+            self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nотправляю в ComfyUI.", None)
+            self._start(app, prompt, path, list(refs or []), job)
 
         try:
             loop = asyncio.get_event_loop()
@@ -740,13 +794,15 @@ class PluginImpl(Plugin):
             return ""
         return raw
 
-    def _start(self, app, prompt, wf_path: Path, refs: List[str]):
+    def _start(self, app, prompt, wf_path: Path, refs: List[str], job: float = 0):
         def work():
             try:
                 msg = self.tool_generate(app, prompt=prompt, workflow=str(wf_path), refs=refs)
             except Exception as e:
                 msg = f"генерация сломалась: {e}"
-            app.state["imggen_stage"] = "idle"
+            if not job or app.state.get("imggen_job") == job:
+                app.state["imggen_stage"] = "idle"
+                app.state["imggen_done_at"] = time.time()
             path = app.state.get("phone_media_last")
             req = str(app.state.get("imggen_request") or "")
             ok = path and Path(str(path)).exists() and "ошиб" not in (msg or "").lower() and "не " not in (msg or "")[:18]
