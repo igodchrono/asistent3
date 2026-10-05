@@ -135,24 +135,32 @@ class PluginImpl(Plugin):
             stage = "idle"
 
         if stage == "drafting" and age < 25:
+            if self._has_word(low, "отмена", "стоп") or "не надо" in low:
+                app.state["imggen_stage"] = "idle"
+                app.state["imggen_job"] = 0
+                return HookResult(True, "ок, остановила сборку промпта.")
             return HookResult(True, "уже собираю один промпт, не пересобираю.")
         if stage == "await_model":
             if self._has_word(low, "отмена", "стоп") or "не надо" in low:
                 app.state["imggen_stage"] = "idle"
                 return HookResult(True, "ок, не рисую.")
-            paths = self._choices()
-            picked = self._match_choice(low, paths)
-            if picked is None and low.strip() in ("1", "текст", "t2i", "новая"):
-                picked = self._resolve_wf("t2i")
-            if picked is None and any(k in low for k in ("2", "правка", "edit", "референс")):
-                picked = self._resolve_wf("edit")
-            if picked is None or not picked.exists():
+            choice = low.strip(" .!")
+            fam = ""
+            if choice in ("1", "текст", "t2i", "новая") or choice.startswith("1 ") or choice.startswith("1."):
+                fam = "t2i"
+            elif choice in ("2", "правка", "edit", "референс") or choice.startswith("2 ") or choice.startswith("2.") or "правк" in choice:
+                fam = "edit"
+            else:
+                picked = self._match_choice(low, self._choices())
+                if picked is not None and picked.exists():
+                    fam = self._family(picked.stem)
+            if not fam:
                 return HookResult(True, "напиши 1 (только текст) или 2 (правка фото).")
             req = str(app.state.get("imggen_request") or text)
-            fam = self._family(picked.stem)
-            if fam == "edit" and not (self._refs(app) or app.state.get("imggen_refs")):
+            refs_now = self._refs(app) or list(app.state.get("imggen_refs") or [])
+            if fam == "edit" and not refs_now:
                 return HookResult(True, "для правки сначала прикрепи фото.")
-            self._begin_one(app, req, wf="edit" if fam == "edit" else "t2i")
+            self._begin_one(app, req, wf=fam)
             label = "правка" if fam == "edit" else "текст"
             return HookResult(True, f"{label}. один промпт и сразу в генерацию.")
         if stage == "await_prompt":
@@ -198,10 +206,13 @@ class PluginImpl(Plugin):
     def _begin_one(self, app, raw: str, wf: str = "") -> None:
         """Один промпт от модели и сразу очередь ComfyUI. Без второй сборки."""
         low = (raw or "").lower()
-        refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
         if not wf:
             wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
         wf = "edit" if self._family(wf) == "edit" else "t2i"
+        if wf == "edit":
+            refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+        else:
+            refs = self._attached(app)
         job = time.time()
         app.state["imggen_request"] = raw
         app.state["imggen_refs"] = refs
@@ -270,7 +281,7 @@ class PluginImpl(Plugin):
         return any(k in low for k in _EDIT_WORDS)
 
     def _is_prompt_revise(self, low: str) -> bool:
-        if any(w in low for w in ("напоминан", "заметк", "календар", "задач", "список", "файл")):
+        if any(w in low for w in ("напоминан", "заметк", "календар", "задач", "список", "файл", "окно", "вкладк", "громч", "тише")):
             return False
         if any(k in low for k in ("промпт", "промт")) and any(
             w in low for w in ("измени", "поправь", "перепиши", "добавь", "убери", "другой", "переделай")
@@ -291,14 +302,17 @@ class PluginImpl(Plugin):
         prev = str(app.state.get("imggen_last_prompt") or "")
         base = str(app.state.get("imggen_request") or "")
         low = (text or "").lower()
-        wf = str(app.state.get("imggen_last_wf") or "t2i")
-        if any(k in low for k in ("промпт", "промт")) or not self._wants_edit(low):
-            wf = "t2i" if wf != "edit" or any(k in low for k in ("промпт", "промт")) else wf
-        if any(k in low for k in ("промпт", "промт")):
-            wf = "t2i"
         refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
-        if wf == "edit" and not refs:
+        if any(k in low for k in ("промпт", "промт")) or not self._wants_edit(low):
             wf = "t2i"
+        else:
+            wf = "edit"
+        if wf == "edit" and not refs:
+            app.state["imggen_stage"] = "await_prompt"
+            app.state["imggen_workflow_hint"] = "edit"
+            app.state["imggen_request"] = (text or "").strip()
+            app.state["imggen_at"] = time.time()
+            return "для правки фото нужен кадр. прикрепи его и повтори, что изменить."
         merged = (
             "Это правка уже отправленного промпта. Верни один цельный новый промпт, не ответ в чат.\n"
             f"Прошлый запрос: {base[:500]}\n"
@@ -314,18 +328,19 @@ class PluginImpl(Plugin):
 
     def _after_scene(self, app, raw: str) -> str:
         low = (raw or "").lower()
-        refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
         edit = self._wants_edit(low) or str(app.state.get("imggen_workflow_hint") or "") in ("edit", "правка", "qwen_edit")
         fresh = self._wants_fresh(low)
         named = self._pick_workflow_name(low)
         if named:
             edit = self._family(named) == "edit"
             fresh = not edit
+        attached = self._attached(app)
+        refs = self._refs(app) if edit else attached
         ask = bool(app.get_plugin_setting(self.id, "ask_workflow", True))
-        if refs and ask and not edit and not fresh and not named:
+        if attached and ask and not edit and not fresh and not named:
             app.state["imggen_stage"] = "await_model"
             app.state["imggen_request"] = raw
-            app.state["imggen_refs"] = refs
+            app.state["imggen_refs"] = attached
             app.state["imggen_at"] = time.time()
             return (
                 "фото есть. что делаем?\n"
@@ -339,6 +354,8 @@ class PluginImpl(Plugin):
             app.state["imggen_at"] = time.time()
             return "для правки прикрепи фото и напиши, что изменить."
         wf = "edit" if edit else "t2i"
+        if edit:
+            app.state["imggen_refs"] = refs
         self._begin_one(app, raw, wf=wf)
         if edit:
             return "правка референса. один промпт-инструкция и сразу в Qwen-Image 2.1."
@@ -490,9 +507,7 @@ class PluginImpl(Plugin):
                 return HookResult(True, f"нет файла {path.name}. Нужны qwen21_t2i.json или qwen21_edit.json.")
             if self._is_stub_wf(path):
                 return HookResult(True,
-                    f"{path.name} — заглушка, не граф ComfyUI. "
-                    "В ComfyUI: Save (API Format) → сохрани как workflows/{path.name}. "
-                    "Пока можно «давай qwen» — там живой qwen_image.json.")
+                    f"{path.name} — не граф ComfyUI. Нужны qwen21_t2i.json и qwen21_edit.json.")
             app.state["imggen_stage"] = "busy"
             fam = self._family(wf or path.stem)
             refs = list(app.state.get("imggen_refs") or [])
@@ -768,11 +783,19 @@ class PluginImpl(Plugin):
             return f"anime fox girl with orange hair and tail, {scene}, clean lineart, high detail, no watermark"
         return f"{scene}, clean illustration, high detail, no watermark"
 
+    def _attached(self, app) -> List[str]:
+        files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])
+        return self._image_files(files)
+
     def _refs(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])
         last = app.state.get("phone_media_last")
         if last:
             files.append(last)
+        return self._image_files(files)
+
+    @staticmethod
+    def _image_files(files) -> List[str]:
         out, seen = [], set()
         for f in files:
             p = Path(str(f))
