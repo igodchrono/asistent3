@@ -209,6 +209,8 @@ class PluginImpl(Plugin):
         if not wf:
             wf = self._pick_workflow_name(low) or str(app.state.get("imggen_workflow_hint") or "")
         wf = "edit" if self._family(wf) == "edit" else "t2i"
+        if "\nCHANGE:\n" not in (raw or ""):
+            app.state["imggen_origin"] = raw
         if wf == "edit":
             refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
         else:
@@ -313,11 +315,13 @@ class PluginImpl(Plugin):
             app.state["imggen_request"] = (text or "").strip()
             app.state["imggen_at"] = time.time()
             return "для правки фото нужен кадр. прикрепи его и повтори, что изменить."
+        origin = str(app.state.get("imggen_origin") or base)
         merged = (
-            "Это правка уже отправленного промпта. Верни один цельный новый промпт, не ответ в чат.\n"
-            f"Прошлый запрос: {base[:500]}\n"
-            f"Прошлый промпт:\n{prev[:1800]}\n"
-            f"Что изменить: {text}"
+            "REVISION\n"
+            f"ORIGIN:\n{origin[:800]}\n"
+            f"PREVIOUS:\n{prev[:1800]}\n"
+            "CHANGE:\n"
+            f"{text}"
         )
         self._begin_one(app, merged, wf=wf)
         app.state["imggen_request"] = (text or "").strip()
@@ -411,56 +415,89 @@ class PluginImpl(Plugin):
     async def _one_prompt(self, app, request: str, refs: list, wf: str) -> str:
         fam = self._family(wf)
         name, look = self._char_look(app)
-        about = self._about_character(request, name)
+        origin, previous, change, fresh = self._split_revision(request)
+        about = self._about_character(f"{origin}\n{change or fresh}", name)
         if fam == "edit":
             system = (
-                "Ты пишешь одну инструкцию правки для Qwen-Image-2.1 Edit. "
-                "Английский язык. Это не описание новой картинки с нуля. "
-                "Скажи, что изменить, и что оставить. Исходное фото называй <image1>. "
-                "Позу, лицо, одежду и композицию сохраняй, если пользователь прямо не просит их менять. "
-                "Не добавляй masterpiece, 8k, best quality. "
-                "Верни только инструкцию, без кавычек и пояснений."
+                "Ты пишешь финальную инструкцию для Qwen-Image-2.1 Edit. "
+                "Граф её больше не переписывает. Это не описание новой картинки. "
+                "Английский язык, короткие указания. Исходное фото называй <image1>. "
+                "Напиши, что изменить, и что оставить: pose, face, expression, clothes, "
+                "background, composition. Оставляй их, если пользователь прямо не просит менять. "
+                "Не пиши masterpiece, 8k, best quality, highly detailed. "
+                "Не подменяй человека и не описывай кадр с нуля. "
+                "Если это правка старой инструкции, сохрани прежние keep и внеси только CHANGE. "
+                "Не копируй подписи ORIGIN, PREVIOUS, CHANGE. "
+                "Верни только инструкцию, без кавычек вокруг всего текста и без пояснений."
             )
-            subject = "Меняй только то, что просит пользователь. Не подменяй человека на другого персонажа."
-            if about:
-                subject = (
-                    f"На фото может быть персонаж «{name}». Не переписывай внешность, "
-                    f"если об этом не просят. Карточка только как ориентир:\n{look[:400]}"
-                )
         else:
             system = (
-                "Ты пишешь один английский абзац для Qwen-Image-2.1 text-to-image. "
-                "Опиши готовый кадр так, будто смотришь на него: кто, поза, одежда, место, "
-                "свет, материалы, композиция. Настоящее время, без приказов вроде make sure. "
-                "Не пиши masterpiece, 8k, highly detailed, award-winning и размер в пикселях. "
-                "Если пользователь хочет читаемый текст на картинке, вставь его точно, "
-                "в исходной письменности, в двойных кавычках. "
-                "Верни только абзац, без JSON и без пояснений."
+                "Ты пишешь финальный промпт для Qwen-Image-2.1 text-to-image. "
+                "Граф его больше не переписывает. Один английский абзац, как будто кадр уже перед тобой. "
+                "Настоящее время. Нельзя: make sure, create, ensure, you, masterpiece, 8k, "
+                "highly detailed, award-winning, best quality, разрешение, соотношение сторон, пиксели. "
+                "Первая фраза строго такого вида: "
+                "The image is a <vertical|wide|square> <style> <photograph|illustration|poster|scene> of <subject>, <background>. "
+                "Дальше где что стоит: left, centre, right, upper third, lower third. "
+                "Одежда и материалы отдельно. Отдельное предложение The lighting is.... "
+                "Последнее предложение The overall composition.... "
+                "Читаемый текст на картинке оставляй в исходной письменности внутри прямых двойных кавычек. "
+                "Если даны PREVIOUS и CHANGE, сохрани всё, что не просили менять, и впиши только правку. "
+                "Не копируй подписи ORIGIN, PREVIOUS, CHANGE и не отвечай по-русски. "
+                "Только абзац."
             )
-            if about:
-                subject = (
-                    f"Герой кадра — персонаж «{name}». Внешность только из карточки, не выдумывай другую:\n"
-                    f"{look[:500]}"
-                )
-            else:
-                subject = (
-                    f"Это не портрет персонажа «{name}». "
-                    "Не добавляй её имя, лисьи уши, хвост и рыжие волосы."
-                )
-        user = (
-            f"{subject}\n"
-            f"Референс: {'да, граф edit' if fam == 'edit' else 'нет, граф только по тексту'}.\n"
-            f"Запрос: {request}"
-        )
-        raw = (await self._llm_complete(app, system, user) or "").strip()
-        raw = raw.strip().strip("`").strip().strip('"').strip("«»")
-        if raw.lower().startswith("json"):
-            raw = raw[4:].strip()
+        if about:
+            subject = (
+                f"В кадре персонаж «{name}». Внешность переведи на английский, карточку в ответ не копируй:\n"
+                f"{look[:500]}"
+            )
+        else:
+            subject = "Рисуй только запрошенное. Не добавляй персонажа чата и черты, которых нет в запросе."
+        if change or previous:
+            user = (
+                f"{subject}\n"
+                f"ORIGIN:\n{origin}\n"
+                f"PREVIOUS:\n{previous}\n"
+                f"CHANGE:\n{change}"
+            )
+        else:
+            user = f"{subject}\nЗапрос:\n{fresh}"
+        raw = self._unwrap_prompt(await self._llm_complete(app, system, user) or "")
         if raw.startswith("{") and raw.endswith("}"):
             data = self._parse_prompt_json(raw)
-            raw = str(data.get(fam) or data.get("rewritten_prompt") or data.get("prompt") or "").strip()
-        limit = 700 if fam == "edit" else 2200
+            raw = str(data.get("rewritten_prompt") or data.get(fam) or data.get("prompt") or "").strip()
+            raw = self._unwrap_prompt(raw)
+        limit = 900 if fam == "edit" else 3200
         return raw[:limit]
+
+    @staticmethod
+    def _split_revision(request: str):
+        text = request or ""
+        if not text.startswith("REVISION\n"):
+            return text, "", "", text
+        origin = text.split("ORIGIN:\n", 1)[-1].split("\nPREVIOUS:\n", 1)[0].strip()
+        previous = ""
+        change = ""
+        if "\nPREVIOUS:\n" in text:
+            previous = text.split("\nPREVIOUS:\n", 1)[1].split("\nCHANGE:\n", 1)[0].strip()
+        if "\nCHANGE:\n" in text:
+            change = text.split("\nCHANGE:\n", 1)[1].strip()
+        return origin, previous, change, change or origin
+
+    @staticmethod
+    def _unwrap_prompt(raw: str) -> str:
+        s = (raw or "").strip()
+        if s.startswith("```"):
+            parts = s.split("```")
+            s = parts[1] if len(parts) > 1 else s.strip("`")
+            if s.lower().startswith("json"):
+                s = s[4:]
+            s = s.strip()
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+            s = s[1:-1].strip()
+        return s
 
     def _schedule_card(self, app, text, refs):
         async def run():
@@ -528,33 +565,15 @@ class PluginImpl(Plugin):
         return HookResult(True, self._model_menu(paths) if paths else "напиши имя графа из workflows/.")
 
     def _ask_card(self, app, prompt: str, refs: List[str]) -> str:
-        if app.state.get("imggen_prompt_qwen"):
+        if app.state.get("imggen_prompt_t2i") or app.state.get("imggen_prompt"):
             return self._ask_card_ready(app, refs)
         req = str(app.state.get("imggen_request") or "")
-        qwen = self._draft_prompt(app, req, "qwen")
-        qedit = self._draft_prompt(app, req, "qwen_edit") if refs else ""
-        sdxl = self._draft_prompt(app, req, "sdxl")
-        zpr = self._draft_prompt(app, req, "z")
-        ref = (
-            f"\nРеференс: {Path(refs[0]).name}. Для правки кадра — «qwen_edit» / «правка»."
-            if refs else
-            "\nРеференса нет. Для правки фото: 📎 + «поправь …»."
-        )
-        lines = [
-            "Собрала промпты под модели:",
-            f"Qwen:\n«{qwen}»",
-        ]
-        if qedit:
-            lines.append(f"Qwen-правка:\n«{qedit}»")
-        lines.append(f"SDXL:\n«{sdxl}»")
-        lines.append(f"Z-Image:\n«{zpr}»")
-        lines.append(ref)
-        lines.append("Пиши: «давай qwen» / «sdxl» / «z» / «правка» — или поправь текст сцены.")
-        app.state["imggen_prompt_qwen"] = qwen
-        app.state["imggen_prompt_qwen_edit"] = qedit
-        app.state["imggen_prompt_sdxl"] = sdxl
-        app.state["imggen_prompt_z"] = zpr
-        return "\n\n".join(lines)
+        t2i = self._draft_prompt(app, req, "t2i")
+        edit = self._draft_prompt(app, req, "edit") if refs else ""
+        app.state["imggen_prompt_t2i"] = t2i
+        app.state["imggen_prompt_edit"] = edit
+        app.state["imggen_prompt"] = t2i
+        return self._ask_card_ready(app, refs)
 
     def _pick_workflow_name(self, low: str) -> str:
         # longer keys first
@@ -634,7 +653,7 @@ class PluginImpl(Plugin):
         llm = getattr(app, "llm", None)
         if llm is not None and hasattr(llm, "chat_once"):
             try:
-                out = await llm.chat_once(msgs, temperature=0.4, max_tokens=1400)
+                out = await llm.chat_once(msgs, temperature=0.4, max_tokens=1800)
                 if out:
                     return str(out)
             except Exception as e:
@@ -673,63 +692,73 @@ class PluginImpl(Plugin):
                 "Рисуй только то, что в запросе пользователя."
             )
         system = (
-            "Ты редактор промптов для генерации изображений. "
-            "Пользователь описал сцену. НЕ копируй его фразу целиком. "
-            "Переведи в визуальный промпт: кто на кадре, поза, одежда, место, свет, ракурс. "
+            "Ты редактор промптов только для Qwen-Image-2.1. "
             "Верни ТОЛЬКО JSON без markdown:\n"
-            '{"qwen":"...","sdxl":"...","z":"...","qwen_edit":"..."}\n'
-            "qwen — 1–3 предложения естественным языком (RU или EN), детальная сцена.\n"
-            "sdxl — теги через запятую, английский, без предложений.\n"
-            "z — короткое английское описание + ключевые детали.\n"
-            "qwen_edit — инструкция правки кадра (если есть референс), иначе пустая строка.\n"
-            "Нельзя писать 'на котором ты'. Герой картинки = герой запроса, не собеседник из чата."
+            '{"t2i":"...","edit":"..."}\n'
+            "t2i — один английский абзац наблюдателя: The image is a ..., где что стоит, "
+            "The lighting is..., The overall composition.... Без masterpiece и 8k.\n"
+            "edit — английская инструкция правки с <image1>, что изменить и что оставить. "
+            "Если референса нет, edit оставь пустым.\n"
+            "Не вставляй персонажа чата, если запрос не про него."
         )
         user = (
             f"{subject}\n"
             f"Референс приложен: {'да' if refs else 'нет'}\n"
             f"Запрос пользователя: {request}\n"
-            "Собери три разных промпта под модели."
+            "Собери промпт t2i и, если есть референс, инструкцию edit."
         )
         raw = await self._llm_complete(app, system, user)
         data = self._parse_prompt_json(raw)
         print(f"imggen llm prompts keys={list(data.keys())} raw={raw[:180]!r}", flush=True)
-        if not data.get("qwen"):
+        if not data.get("t2i") and not data.get("qwen"):
             # LLM не ответила — лучше сказать, чем совать сырую фразу
             if raw:
-                data["qwen"] = raw.strip()[:600]
+                data["t2i"] = raw.strip()[:600]
             else:
                 return (
                     "не смогла получить промпт от LLM. проверь LM Studio "
                     "(http://127.0.0.1:1234) и повтори запрос."
                 )
-        app.state["imggen_prompt_qwen"] = data.get("qwen") or ""
-        app.state["imggen_prompt_sdxl"] = data.get("sdxl") or data.get("qwen") or ""
-        app.state["imggen_prompt_z"] = data.get("z") or data.get("qwen") or ""
-        app.state["imggen_prompt_qwen_edit"] = data.get("qwen_edit") or ""
-        app.state["imggen_prompt"] = data.get("qwen") or ""
+        t2i = data.get("t2i") or data.get("qwen") or ""
+        edit = data.get("edit") or data.get("qwen_edit") or ""
+        app.state["imggen_prompt_t2i"] = t2i
+        app.state["imggen_prompt_edit"] = edit
+        app.state["imggen_prompt"] = t2i
+        app.state["imggen_last_prompt"] = t2i
         return self._ask_card_ready(app, refs)
 
     def _ask_card_ready(self, app, refs: list) -> str:
-        qwen = str(app.state.get("imggen_prompt_qwen") or "")
-        qedit = str(app.state.get("imggen_prompt_qwen_edit") or "")
-        sdxl = str(app.state.get("imggen_prompt_sdxl") or "")
-        zpr = str(app.state.get("imggen_prompt_z") or "")
-        ref = (
-            f"\nРеференс: {Path(refs[0]).name}. Для правки — «правка»."
-            if refs else
-            "\nРеференса нет. 📎 + «поправь …» если нужно img2img."
-        )
+        t2i = str(app.state.get("imggen_prompt_t2i") or app.state.get("imggen_prompt") or "")
+        edit = str(app.state.get("imggen_prompt_edit") or "")
         lines = [
-            "LLM собрала промпты (не сырой запрос):",
-            f"Qwen:\n«{qwen}»",
+            "Промпт для Qwen-Image 2.1:",
+            f"Текст:\n«{t2i}»",
         ]
-        if qedit:
-            lines.append(f"Qwen-правка:\n«{qedit}»")
-        lines.append(f"SDXL:\n«{sdxl}»")
-        lines.append(f"Z-Image:\n«{zpr}»")
-        lines.append(ref)
-        lines.append("Если ок — «давай qwen» / «sdxl» / «z» / «правка». Если нет — опиши правку сцены.")
+        if edit:
+            lines.append(f"Правка:\n«{edit}»")
+        lines.append("Если ок — «давай». Если нет — напиши, что изменить.")
         return "\n\n".join(lines)
+
+    def _draft_prompt(self, app, raw: str, family: str = "") -> str:
+        fam = self._family(family or "t2i")
+        scene = self._user_scene(raw) or "a clear subject in even light"
+        name, look = self._char_look(app)
+        about = self._about_character(raw, name)
+        if fam == "edit":
+            keep = "Keep the pose, face, clothes, and composition from <image1>."
+            if about:
+                keep = f"Keep {name} as shown in <image1>: pose, face, and clothes, unless asked otherwise."
+            return f"Edit <image1>. {keep} Change: {scene}."
+        if about:
+            return (
+                f"The image is a vertical illustration of {name}. Appearance: {look[:240]}. "
+                f"Scene: {scene}. The lighting is soft and even. "
+                "The overall composition is a clear view of only this scene."
+            )
+        return (
+            f"The image is an illustration of {scene}. "
+            "The lighting is clear. The overall composition shows only what was requested."
+        )
 
     def _user_scene(self, raw: str) -> str:
 
@@ -749,39 +778,6 @@ class PluginImpl(Plugin):
             "аниме-девушка лиса: рыжие длинные волосы, лисьи уши, пушистый хвост, "
             "голубые глаза, узнаваемый персонаж Лисичка"
         )
-
-    def _draft_prompt(self, app, raw: str, family: str = "") -> str:
-        fam = family or str(app.state.get("imggen_family") or app.get_plugin_setting(self.id, "default_workflow", "qwen") or "qwen")
-        fam = self._family(fam)
-        scene = self._user_scene(raw)
-        name, look = self._char_look(app)
-        about = self._about_character(raw, name)
-        refs = bool(app.state.get("imggen_refs") or self._refs(app))
-        if fam == "qwen_edit" or (fam == "qwen" and refs):
-            if not scene:
-                scene = "аккуратно отредактируй кадр"
-            keep = "Сохрани людей и композицию кадра." if not about else f"Сохрани героиню ({name}) и композицию."
-            return (
-                f"Отредактируй это изображение. {keep} "
-                f"Задача: {scene}. Без водяных знаков."
-            )
-        if not scene:
-            scene = "четкий кадр, хороший свет"
-        if fam == "qwen":
-            if about:
-                return (
-                    f"Иллюстрация. Герой: {look[:240]}. Сцена: {scene}. "
-                    "Цельные руки, без текста на картинке."
-                )
-            return f"Иллюстрация. Сцена: {scene}. Без текста на картинке."
-        if fam == "sdxl":
-            prefix = str(app.get_plugin_setting(self.id, "positive_prefix", "masterpiece, best quality") or "")
-            if about:
-                return f"{prefix}, {self._look_qwen()}, {scene}, detailed background"
-            return f"{prefix}, {scene}, detailed background"
-        if about:
-            return f"anime fox girl with orange hair and tail, {scene}, clean lineart, high detail, no watermark"
-        return f"{scene}, clean illustration, high detail, no watermark"
 
     def _attached(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])
