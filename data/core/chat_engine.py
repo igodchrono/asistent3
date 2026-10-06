@@ -552,7 +552,7 @@ class ChatEngine:
             }.get(handled_by, "chat")
             self.app.state["last_intent"] = intent_from
             reply = handled_reply or ""
-            if handled_by not in ("persona", "voice", "phone_media", "files") and len(reply.strip()) > 24:
+            if handled_by not in ("persona", "voice", "phone_media", "files", "screen") and len(reply.strip()) > 24:
                 reply = await self._in_character_line(reply, intent_from)
             reply = self._after_plugins(plugs, reply)
             self.history.append({"role": "assistant", "content": reply})
