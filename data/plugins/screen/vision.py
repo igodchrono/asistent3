@@ -321,6 +321,11 @@ class PluginImpl(Plugin):
         self._ui["react"] = react
         layout.addWidget(react)
 
+        auto = QtWidgets.QCheckBox("Сама выбирать картинку с этого монитора, без просьбы")
+        auto.setChecked(bool(values.get("auto_pick", True)))
+        self._ui["auto_pick"] = auto
+        layout.addWidget(auto)
+
         form = QtWidgets.QFormLayout()
         spin = QtWidgets.QSpinBox()
         spin.setRange(640, 3840)
@@ -332,6 +337,11 @@ class PluginImpl(Plugin):
         iv.setValue(int(values.get("interval_sec", 4) or 4))
         self._ui["interval_sec"] = iv
         form.addRow("Интервал опроса (сек)", iv)
+        gap = QtWidgets.QSpinBox()
+        gap.setRange(2, 180)
+        gap.setValue(int(values.get("auto_pick_minutes", 5) or 5))
+        self._ui["auto_pick_minutes"] = gap
+        form.addRow("Сама выбирает не чаще, минут", gap)
         layout.addLayout(form)
 
         layout.addWidget(QtWidgets.QLabel("<b>Монитор для снимков и «что на экране»</b>"))
@@ -441,6 +451,10 @@ class PluginImpl(Plugin):
             out["enabled"] = self._ui["enabled"].isChecked()
         if "react" in self._ui:
             out["react"] = self._ui["react"].isChecked()
+        if "auto_pick" in self._ui:
+            out["auto_pick"] = self._ui["auto_pick"].isChecked()
+        if "auto_pick_minutes" in self._ui:
+            out["auto_pick_minutes"] = self._ui["auto_pick_minutes"].value()
         if "max_side" in self._ui:
             out["max_side"] = self._ui["max_side"].value()
         if "interval_sec" in self._ui:

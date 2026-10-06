@@ -37,13 +37,15 @@ _EMOTIONS = {
 class PluginImpl(Plugin):
     id = "screen"
     name = "Экран (зрение + реакция)"
-    version = "1.1.0"
+    version = "1.2.0"
     description = "Снимок монитора, реакция на окно и выбор одной картинки"
     settings_tab = "own"
     settings_tab_title = "Экран"
     settings_schema = [
         SettingField("enabled", "Включить", "bool", True),
         SettingField("react", "Реакция на активное окно", "bool", True),
+        SettingField("auto_pick", "Сама выбирать картинку с монитора", "bool", True),
+        SettingField("auto_pick_minutes", "Не чаще, чем раз в N минут", "int", 5, min_value=2, max_value=180),
         SettingField("interval_sec", "Интервал опроса (сек)", "int", 4, min_value=2, max_value=30),
         SettingField("max_side", "Макс. сторона снимка (px)", "int", 1600, min_value=640, max_value=3840),
         SettingField("monitor", "Индекс монитора", "int", 1, min_value=0, max_value=8),
@@ -57,7 +59,7 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state["screen_plugin"] = self
-        print("👁 screen 1.1: vision+react+pick", flush=True)
+        print("👁 screen 1.2: vision+react+pick", flush=True)
         # wrap original vision tools if folder still exists
         try:
             from plugins.screen.vision import PluginImpl as Vision
@@ -100,7 +102,7 @@ class PluginImpl(Plugin):
         app.state["screen_pick_busy"] = True
         app.state["screen_pick_job"] = job
         threading.Thread(
-            target=self._pick_thread, args=(app, text, job), name="screen-pick", daemon=True
+            target=self._pick_thread, args=(app, text, job, False), name="screen-pick", daemon=True
         ).start()
         return HookResult(True, "смотрю выбранный экран и выбираю.")
 
@@ -110,41 +112,48 @@ class PluginImpl(Plugin):
             return False
         return any(w in low for w in _PICK)
 
-    def _pick_thread(self, app, text: str, job: float) -> None:
+    def _pick_thread(self, app, text: str, job: float, quiet: bool = False) -> None:
         try:
-            asyncio.run(self._pick(app, text, job))
+            asyncio.run(self._pick(app, text, job, quiet))
         except Exception as e:
             print(f"screen pick: {e}", flush=True)
-            self._finish(app, job, "не смогла выбрать картинку. проверь модель со зрением в LM Studio.", None, "")
+            if quiet:
+                self._finish(app, job, "", None, "")
+            else:
+                self._finish(app, job, "не смогла выбрать картинку. проверь модель со зрением в LM Studio.", None, "")
 
-    async def _pick(self, app, text: str, job: float) -> None:
+    async def _pick(self, app, text: str, job: float, quiet: bool = False) -> None:
+        def fail(msg: str) -> None:
+            self._finish(app, job, "" if quiet else msg, None, "")
+
         if not self._vision or not hasattr(self._vision, "capture"):
-            self._finish(app, job, "зрение экрана не загружено.", None, "")
+            fail("зрение экрана не загружено.")
             return
         path = self._vision.capture(app)
         if not path or not Path(path).is_file():
-            self._finish(app, job, "не сняла выбранный экран. проверь монитор в настройках.", None, "")
+            fail("не сняла выбранный экран. проверь монитор в настройках.")
             return
         raw = Path(path).read_bytes()
         if len(raw) < 80:
-            self._finish(app, job, "снимок пустой.", None, "")
+            fail("снимок пустой.")
             return
         name, card = self._card(app)
         system = (
-            "Ты персонаж из карточки. На снимке экран пользователя. "
-            "Выбери одну уже видимую картинку по своему вкусу из карточки, не «самую красивую вообще». "
+            "Ты персонаж из карточки. На снимке выбранный монитор пользователя. "
+            "Если там нет нескольких отдельных картинок, верни только {\"skip\": true}. "
+            "Если картинки есть, выбери одну по вкусу из карточки, не «самую красивую вообще». "
             "Игнорируй окна ассистента, панели и пустые поля. "
             "Верни только JSON без markdown:\n"
             '{"bbox":[x,y,w,h],"emotion":"happy","line":"...","index":0}\n'
             "bbox — доли от 0 до 1, прямоугольник только выбранной миниатюры. "
             "emotion одно из: happy, flirty, sad, angry, shy, curious, calm, annoyed, "
             "playful, sleepy, proud, mischievous. "
-            "line — 1–2 предложения по-русски, живая реакция, без JSON и без слов bbox. "
+            "line — 1–2 предложения по-русски, как будто ты сама это заметила, без JSON и без слов bbox. "
             "index — номер слева направо сверху вниз, если это сетка поиска, иначе 0."
         )
         user = (
             f"Персонаж: {name}\nКарточка:\n{card}\n"
-            f"Просьба: {text}\nВыбери одну картинку на снимке."
+            f"{text}\nВыбери одну картинку на снимке или откажись, если их нет."
         )
         b64 = base64.b64encode(raw).decode("ascii")
         messages = [
@@ -160,12 +169,13 @@ class PluginImpl(Plugin):
             data = await self._ask_json(app, messages)
         if app.state.get("screen_pick_job") != job:
             return
-        if not data:
-            self._finish(app, job, "не разобрала, какую картинку выбрать. оставь сетку на выбранном мониторе.", None, "")
+        skip = data.get("skip") if data else None
+        if not data or skip is True or str(skip).strip().lower() in ("true", "1", "yes"):
+            fail("не разобрала, какую картинку выбрать. оставь сетку на выбранном мониторе.")
             return
         bbox = self._bbox(data.get("bbox"))
         if not bbox:
-            self._finish(app, job, "на экране не вижу отдельную картинку. оставь сетку на выбранном мониторе.", None, "")
+            fail("на экране не вижу отдельную картинку. оставь сетку на выбранном мониторе.")
             return
         saved = self._download_original(app, data)
         if saved is None:
@@ -332,6 +342,8 @@ class PluginImpl(Plugin):
             msg = text or ""
             if path and path.exists():
                 msg = msg + f"\n[фото: {path}]"
+            if not msg.strip():
+                return
             gui = getattr(app, "window", None) or app.state.get("gui")
             if gui and hasattr(gui, "publish_assistant_message"):
                 gui.publish_assistant_message(msg)
@@ -370,6 +382,7 @@ class PluginImpl(Plugin):
     def _tick(self, app: AppContext) -> None:
         if not app.get_plugin_setting(self.id, "enabled", True):
             return
+        self._maybe_auto_pick(app)
         if not app.get_plugin_setting(self.id, "react", True):
             return
         title = self._fg_title()
@@ -395,6 +408,35 @@ class PluginImpl(Plugin):
                 persona.set_context(app, anim or emo, "screen")
             except Exception:
                 pass
+
+    def _maybe_auto_pick(self, app: AppContext) -> None:
+        if not app.get_plugin_setting(self.id, "auto_pick", True):
+            return
+        if app.state.get("screen_pick_busy"):
+            return
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return
+        if not self._vision or not hasattr(self._vision, "capture"):
+            return
+        gap = int(app.get_plugin_setting(self.id, "auto_pick_minutes", 5) or 5) * 60
+        last = float(app.state.get("screen_auto_pick_at") or 0)
+        if last and time.time() - last < max(120, gap):
+            return
+        job = time.time()
+        app.state["screen_auto_pick_at"] = job
+        app.state["screen_pick_busy"] = True
+        app.state["screen_pick_job"] = job
+        threading.Thread(
+            target=self._pick_thread,
+            args=(
+                app,
+                "Никто не просил. Ты сама смотришь выбранный монитор и решаешь, хочешь ли забрать одну картинку.",
+                job,
+                True,
+            ),
+            name="screen-auto-pick",
+            daemon=True,
+        ).start()
 
     def _infer(self, app, ctx):
         text = str(ctx or "")
