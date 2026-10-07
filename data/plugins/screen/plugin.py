@@ -107,10 +107,45 @@ class PluginImpl(Plugin):
         return HookResult(True, "смотрю выбранный экран и выбираю.")
 
     @staticmethod
+    def _norm(low: str) -> str:
+        t = (low or "").replace("ё", "е")
+        for src, dst in (
+            ("выбири", "выбери"),
+            ("кортин", "картин"),
+            ("посмари", "посмотри"),
+        ):
+            t = t.replace(src, dst)
+        return t
+
+    @staticmethod
     def _wants_pick(low: str) -> bool:
-        if any(w in low for w in _SKIP):
+        t = PluginImpl._norm(low)
+        choose = any(w in t for w in (
+            "выбери", "выбрать", "какая нравится", "какой нравится", "тебе нравится",
+            "какая больше", "по душе", "из этих", "с экрана", "на экране",
+        ))
+        if not choose and not any(w in t for w in _PICK):
             return False
-        return any(w in low for w in _PICK)
+        if any(w in t for w in ("в интернете", "в гугле", "погугли", "загугли", "нарисуй", "сгенерир")):
+            return False
+        about = any(w in t for w in ("картин", "фото", "изображ", "кадр", "экран", "монитор", "этих"))
+        return about or any(w in t for w in _PICK)
+
+    def start_pick(self, app, text: str, quiet: bool = True) -> None:
+        if app.state.get("screen_pick_busy"):
+            return
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return
+        job = time.time()
+        app.state["screen_pick_busy"] = True
+        app.state["screen_pick_job"] = job
+        app.state["screen_auto_pick_at"] = job
+        threading.Thread(
+            target=self._pick_thread,
+            args=(app, text, job, quiet),
+            name="screen-pick",
+            daemon=True,
+        ).start()
 
     def _pick_thread(self, app, text: str, job: float, quiet: bool = False) -> None:
         try:
@@ -141,15 +176,15 @@ class PluginImpl(Plugin):
         system = (
             "Ты персонаж из карточки. На снимке выбранный монитор пользователя. "
             "Если там нет нескольких отдельных картинок, верни только {\"skip\": true}. "
-            "Если картинки есть, выбери одну по вкусу из карточки, не «самую красивую вообще». "
+            "Если картинки есть, выбери одну по вкусу из карточки. "
+            "Координаты бери только по снимку экрана, не по списку ссылок и не по номеру в поиске. "
             "Игнорируй окна ассистента, панели и пустые поля. "
             "Верни только JSON без markdown:\n"
-            '{"bbox":[x,y,w,h],"emotion":"happy","line":"...","index":0}\n'
+            '{"bbox":[x,y,w,h],"emotion":"happy","line":"..."}\n'
             "bbox — доли от 0 до 1, прямоугольник только выбранной миниатюры. "
             "emotion одно из: happy, flirty, sad, angry, shy, curious, calm, annoyed, "
             "playful, sleepy, proud, mischievous. "
-            "line — 1–2 предложения по-русски, как будто ты сама это заметила, без JSON и без слов bbox. "
-            "index — номер слева направо сверху вниз, если это сетка поиска, иначе 0."
+            "line — 1–2 предложения по-русски, как будто ты сама это заметила, без JSON и без слов bbox."
         )
         user = (
             f"Персонаж: {name}\nКарточка:\n{card}\n"
@@ -177,9 +212,7 @@ class PluginImpl(Plugin):
         if not bbox:
             fail("на экране не вижу отдельную картинку. оставь сетку на выбранном мониторе.")
             return
-        saved = self._download_original(app, data)
-        if saved is None:
-            saved = self._crop(app, Path(path), bbox)
+        saved = self._crop(app, Path(path), bbox)
         if saved is None or not saved.exists():
             self._finish(app, job, "вижу кадр, но не смогла сохранить его себе.", None, "")
             return
@@ -337,6 +370,7 @@ class PluginImpl(Plugin):
                 if persona and hasattr(persona, "set_context"):
                     try:
                         persona.set_context(app, emotion, "chat")
+                        persona._pose_lock_until = time.time() + 90
                     except Exception as e:
                         print(f"screen pick emotion: {e}", flush=True)
             msg = text or ""
@@ -422,21 +456,11 @@ class PluginImpl(Plugin):
         last = float(app.state.get("screen_auto_pick_at") or 0)
         if last and time.time() - last < max(120, gap):
             return
-        job = time.time()
-        app.state["screen_auto_pick_at"] = job
-        app.state["screen_pick_busy"] = True
-        app.state["screen_pick_job"] = job
-        threading.Thread(
-            target=self._pick_thread,
-            args=(
-                app,
-                "Никто не просил. Ты сама смотришь выбранный монитор и решаешь, хочешь ли забрать одну картинку.",
-                job,
-                True,
-            ),
-            name="screen-auto-pick",
-            daemon=True,
-        ).start()
+        self.start_pick(
+            app,
+            "Никто не просил. Ты сама смотришь выбранный монитор и решаешь, хочешь ли забрать одну картинку.",
+            True,
+        )
 
     def _infer(self, app, ctx):
         text = str(ctx or "")

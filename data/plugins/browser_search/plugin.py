@@ -163,6 +163,19 @@ class PluginImpl(Plugin):
         if (
             mode == "images"
             and results
+            and bool(app.get_plugin_setting("screen", "auto_pick", True))
+        ):
+            screen = app.plugins.get("screen")
+            if screen is not None and hasattr(screen, "start_pick") and not app.state.get("screen_pick_busy"):
+                screen.start_pick(
+                    app,
+                    "На выбранном мониторе открыта выдача картинок. Вырежи одну миниатюру именно со снимка экрана.",
+                )
+            return f"Открыла картинки «{q}». Выбираю одну с экрана, не первую ссылку."
+
+        if (
+            mode == "images"
+            and results
             and bool(app.get_plugin_setting(self.id, "auto_download_first", True))
         ):
             extra = self.tool_download_image(app, index=1)

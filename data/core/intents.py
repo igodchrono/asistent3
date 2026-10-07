@@ -177,6 +177,12 @@ def is_web_search(low: str) -> bool:
         return False
     if is_new_similar(low):
         return False
+    if is_pick(low, False):
+        return False
+    choose = any(w in low for w in ("выбери", "выбрать", "какая нравит", "тебе нравит", "по душе"))
+    visible = any(w in low for w in ("экран", "монитор", "картин", "фото", "изображ", "из этих"))
+    if choose and visible and not any(w in low for w in ("в интернете", "в гугле", "погугли", "загугли")):
+        return False
     if any(w in low for w in _WEB_VERBS):
         return True
     if any(w in low for w in ("погугли", "загугли")):

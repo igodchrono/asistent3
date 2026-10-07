@@ -466,6 +466,8 @@ class ChatEngine:
     async def _in_character_line(self, tool_text: str, intent: str) -> str:
         """Короткая реплика персонажа поверх сырого результата инструмента."""
         raw = (tool_text or "").strip()
+        if intent in ("web_search", "download_image", "fetch_page", "fetch_url", "open_last_search"):
+            return raw
         if len(raw) < 12:
             return raw
         cid = (
