@@ -299,6 +299,14 @@ class PluginImpl(Plugin):
             return None
         low = (text or "").strip().lower()
         if low.startswith("запомни:") or low.startswith("запомни "):
+            media = app.plugins.get("phone_media")
+            if (
+                media is not None
+                and hasattr(media, "remember_self_image")
+                and media._is_self_remember(text)
+                and (media._attached(app) or app.state.get("phone_media_last"))
+            ):
+                return None
             body = text.split(":", 1)[-1].strip() if ":" in text else text.split(" ", 1)[-1]
             return HookResult(True, self.tool_add(app, text=body))
         if "что ты помнишь" in low or low in ("память", "что помнишь"):

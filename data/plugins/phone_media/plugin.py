@@ -73,7 +73,11 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state.setdefault("imggen_stage", "idle")
-        print("🖼 imggen 6.0: qwen-image 2.1 t2i / edit", flush=True)
+        print("🖼 imggen 6.1: qwen-image 2.1 t2i / edit + self ref", flush=True)
+        ref = self._self_ref_path(app)
+        if ref:
+            app.state["character_self_ref"] = ref
+            print(f"imggen self ref: {ref}", flush=True)
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["generate_image"] = self.tool_generate
@@ -129,6 +133,9 @@ class PluginImpl(Plugin):
         if not low:
             return None
         stage = str(app.state.get("imggen_stage") or "idle")
+        remembered = self.remember_self_image(app, text)
+        if remembered:
+            return HookResult(True, remembered)
         age = time.time() - float(app.state.get("imggen_at") or 0)
         if stage != "idle" and age > 600:
             app.state["imggen_stage"] = "idle"
@@ -203,7 +210,7 @@ class PluginImpl(Plugin):
                 return True
         return False
 
-    def _begin_one(self, app, raw: str, wf: str = "") -> None:
+    def _begin_one(self, app, raw: str, wf: str = "", refs: Optional[List[str]] = None, kind: str = "") -> None:
         """Один промпт от модели и сразу очередь ComfyUI. Без второй сборки."""
         low = (raw or "").lower()
         if not wf:
@@ -211,13 +218,15 @@ class PluginImpl(Plugin):
         wf = "edit" if self._family(wf) == "edit" else "t2i"
         if "\nCHANGE:\n" not in (raw or ""):
             app.state["imggen_origin"] = raw
-        if wf == "edit":
-            refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
-        else:
-            refs = self._attached(app)
+        if refs is None:
+            if wf == "edit":
+                refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+            else:
+                refs = self._attached(app)
         job = time.time()
         app.state["imggen_request"] = raw
-        app.state["imggen_refs"] = refs
+        app.state["imggen_refs"] = list(refs or [])
+        app.state["imggen_ref_kind"] = kind or ("edit" if wf == "edit" else "")
         app.state["imggen_stage"] = "drafting"
         app.state["imggen_at"] = time.time()
         app.state["imggen_workflow_hint"] = ""
@@ -339,6 +348,17 @@ class PluginImpl(Plugin):
             edit = self._family(named) == "edit"
             fresh = not edit
         attached = self._attached(app)
+        name, _look = self._char_look(app)
+        self_ref = self._self_ref_path(app)
+        if (
+            self._about_character(low, name)
+            and self_ref
+            and not fresh
+            and not edit
+            and not named
+        ):
+            self._begin_one(app, raw, wf="edit", refs=[self_ref], kind="self")
+            return "рисую себя по сохранённому фото. один промпт и сразу в генерацию."
         refs = self._refs(app) if edit else attached
         ask = bool(app.get_plugin_setting(self.id, "ask_workflow", True))
         if attached and ask and not edit and not fresh and not named:
@@ -395,7 +415,9 @@ class PluginImpl(Plugin):
                 path = self._resolve_wf("t2i")
                 app.state["imggen_last_wf"] = fam
             app.state["imggen_stage"] = "busy"
-            title = "правка референса" if fam == "edit" else "картинка по тексту"
+            title = "рисую себя по сохранённому фото" if app.state.get("imggen_ref_kind") == "self" else (
+                "правка референса" if fam == "edit" else "картинка по тексту"
+            )
             self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nотправляю в ComfyUI.", None)
             self._start(app, prompt, path, list(refs or []), job)
 
@@ -417,7 +439,18 @@ class PluginImpl(Plugin):
         name, look = self._char_look(app)
         origin, previous, change, fresh = self._split_revision(request)
         about = self._about_character(f"{origin}\n{change or fresh}", name)
-        if fam == "edit":
+        if fam == "edit" and str(app.state.get("imggen_ref_kind") or "") == "self":
+            system = (
+                "Ты пишешь финальную инструкцию для Qwen-Image-2.1 Edit. "
+                "Граф её больше не переписывает. <image1> — фото внешности персонажа, не готовая сцена. "
+                "Сохрани лицо, волосы, уши и узнаваемость человека с <image1>. "
+                "Сцену, позу, одежду и фон собери заново по запросу пользователя. "
+                "Английский язык, короткие указания. Обязательно начни с <image1>. "
+                "Не пиши masterpiece, 8k, best quality, highly detailed. "
+                "Не копируй подписи ORIGIN, PREVIOUS, CHANGE. "
+                "Верни только инструкцию, без кавычек вокруг всего текста и без пояснений."
+            )
+        elif fam == "edit":
             system = (
                 "Ты пишешь финальную инструкцию для Qwen-Image-2.1 Edit. "
                 "Граф её больше не переписывает. Это не описание новой картинки. "
@@ -622,9 +655,9 @@ class PluginImpl(Plugin):
         if any(t and len(t) >= 3 and t in low for t in tokens):
             return True
         return bool(re.search(
-            r"(нарисуй|сгенерируй|сделай картин|сделай изображ).{0,32}(себя|тебя)|"
+            r"(нарисуй|сгенерируй|сделай картин|сделай изображ).{0,40}(себя|тебя|персонаж|ассистент)|"
             r"\b(себя|тебя)\s+(в|на|у|как|рядом)|"
-            r"(как ты выгля|в сво[её]м образе|этот персонаж|эту героин)",
+            r"(как ты выгля|в сво[её]м образе|этот персонаж|эту героин|ты и я|я и ты|мы вместе)",
             low,
         ))
 
@@ -799,6 +832,71 @@ class PluginImpl(Plugin):
                 seen.add(str(p))
                 out.append(str(p))
         return out
+
+    def remember_self_image(self, app, text: str) -> str:
+        """«Запомни, это ты» + картинка из чата → постоянный референс внешности."""
+        if not self._is_self_remember(text):
+            return ""
+        images = self._attached(app)
+        if not images:
+            last = app.state.get("phone_media_last")
+            if last:
+                images = self._image_files([last])
+        if not images:
+            return ""
+        dest = self._save_self_ref(app, Path(images[0]))
+        app.state["character_self_ref"] = str(dest)
+        print(f"imggen self ref saved: {dest}", flush=True)
+        return f"запомнила. это я. когда рисую себя, беру это фото.\n[фото: {dest}]"
+
+    @staticmethod
+    def _is_self_remember(text: str) -> bool:
+        low = (text or "").lower().replace("ё", "е")
+        low = re.sub(r"\[вложения:.*?\]", " ", low, flags=re.I | re.S)
+        low = low.replace("этоты", "это ты").replace("это-ты", "это ты")
+        low = " ".join(low.split())
+        if low.startswith("запомни:") and not any(k in low for k in ("это ты", "картин", "фото", "изображ", "кадр")):
+            return False
+        if "запомни" not in low and "это ты" not in low:
+            return False
+        if "это ты" in low and ("запомни" in low or len(low) <= 40):
+            return True
+        if "запомни" in low and any(k in low for k in ("референс", "внешность", "это я", "как себя", "себя")):
+            return True
+        if "запомни" not in low:
+            return False
+        rest = low
+        for w in (
+            "запомни", "это", "эту", "этот", "пожалуйста",
+            "картинку", "картинка", "картину", "фото", "изображение", "изображения", "кадр",
+        ):
+            rest = rest.replace(w, " ")
+        return " ".join(rest.split()).strip(" .,:!") == ""
+
+    def _save_self_ref(self, app, src: Path) -> Path:
+        folder = self._out_dir(app) / "self"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"self_ref{src.suffix.lower() or '.png'}"
+        for old in folder.glob("self_ref.*"):
+            if old.resolve() != dest.resolve():
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+        dest.write_bytes(src.read_bytes())
+        return dest
+
+    def _self_ref_path(self, app) -> str:
+        current = str(app.state.get("character_self_ref") or "")
+        if current and Path(current).is_file():
+            return current
+        folder = self._out_dir(app) / "self"
+        if folder.is_dir():
+            for p in sorted(folder.glob("self_ref.*")):
+                if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"} and p.is_file():
+                    app.state["character_self_ref"] = str(p)
+                    return str(p)
+        return ""
 
     def _base(self, app) -> str:
         raw = str(app.get_plugin_setting(self.id, "comfy_url", "http://127.0.0.1:8188") or "").rstrip("/")
